@@ -115,6 +115,32 @@ describe("RunnerRuntime", () => {
     scheduler.tick();
     expect(runtime.getSnapshot().tick).toBe(stoppedTick);
   });
+
+  it("即使 scheduler 返回 undefined handle，start/stop 仍保持幂等", () => {
+    let setCalls = 0;
+    let clearCalls = 0;
+    const scheduler: RuntimeScheduler = {
+      setInterval() {
+        setCalls += 1;
+        return undefined;
+      },
+      clearInterval(handle) {
+        expect(handle).toBeUndefined();
+        clearCalls += 1;
+      },
+    };
+    const runtime = new RunnerRuntime({ scheduler });
+
+    runtime.start();
+    runtime.start();
+    expect(runtime.isRunning).toBe(true);
+    expect(setCalls).toBe(1);
+
+    runtime.stop();
+    runtime.stop();
+    expect(runtime.isRunning).toBe(false);
+    expect(clearCalls).toBe(1);
+  });
 });
 
 describe("Runner REST API", () => {
