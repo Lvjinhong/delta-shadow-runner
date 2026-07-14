@@ -11,12 +11,13 @@
     "dev": "concurrently -k -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite --config vite.config.ts",
-    "build": "npm run typecheck && npm run build:web",
+    "build": "npm run typecheck && npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.server.json",
     "build:web": "vite build --config vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "start": "tsx src/server/index.ts"
+    "start": "node dist/server/server/index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

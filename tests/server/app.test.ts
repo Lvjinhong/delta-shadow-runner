@@ -285,6 +285,10 @@ describe("Runner WebSocket", () => {
       },
     });
 
+    socket.send(JSON.stringify({ command: "start" }));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.getSnapshot().status).toBe("idle");
+
     const broadcastPromise = waitForMessage(
       socket,
       (message) =>
