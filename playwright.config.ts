@@ -20,16 +20,13 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
-    reducedMotion: "reduce",
+    // Playwright 1.61 从 contextOptions 读取该浏览器上下文能力。
+    contextOptions: { reducedMotion: "reduce" },
   },
   projects: [
     {
       name: "chromium",
-      use: {
-        ...devices["Desktop Chrome"],
-        // 项目级 device 配置必须显式保留该媒体偏好，避免被设备描述覆盖。
-        reducedMotion: "reduce",
-      },
+      use: { ...devices["Desktop Chrome"] },
     },
   ],
   webServer: {
