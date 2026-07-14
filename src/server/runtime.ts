@@ -43,7 +43,8 @@ export class RunnerRuntime {
   private readonly source: SimulationSource;
   private readonly scheduler: RuntimeScheduler;
   private readonly listeners = new Set<SnapshotListener>();
-  private timerHandle: unknown | undefined;
+  private timerHandle: unknown = undefined;
+  private running = false;
 
   constructor(options: RunnerRuntimeOptions = {}) {
     this.scenario = options.scenario ?? defaultScenario;
@@ -59,7 +60,7 @@ export class RunnerRuntime {
   }
 
   get isRunning(): boolean {
-    return this.timerHandle !== undefined;
+    return this.running;
   }
 
   get subscriberCount(): number {
@@ -71,21 +72,23 @@ export class RunnerRuntime {
   }
 
   start(): void {
-    if (this.timerHandle !== undefined) {
+    if (this.running) {
       return;
     }
 
     this.timerHandle = this.scheduler.setInterval(() => {
       this.tick();
     }, this.tickMs);
+    this.running = true;
   }
 
   stop(): void {
-    if (this.timerHandle === undefined) {
+    if (!this.running) {
       return;
     }
 
     this.scheduler.clearInterval(this.timerHandle);
+    this.running = false;
     this.timerHandle = undefined;
   }
 
