@@ -1,6 +1,6 @@
 Shadow Runner Lab 进度归档
-更新时间：2026-07-14
-最新代码基线：ab9718e fix: make windows bootstrap idempotent
+更新时间：2026-07-15
+最新代码基线：c3baae1 fix: make powershell bootstrap parseable
 GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 
 [已完成]
@@ -10,25 +10,32 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - Task 4：REST/WebSocket 遥测服务；22 项服务端测试通过，API envelope、capabilities、timer、WebSocket 和并发关闭已加固。
 - Task 5：工业战术 Web 管理端完成；包含 SVG 路线图、四项控制、实时指标、事件时间线、有限重连和显式安全边界。
 - Web 侧完成协议握手保护、控制单 POST、卸载保护、任意坐标归一化、无碰撞 edge ID、对比度和读屏优化。
-- Windows bootstrap 已改为 SHA256 stamp + npm ls 完整性判断；重复运行跳过 npm ci，依赖漂移时自动重装。
-- 本地完整验证：7 个测试文件、117/117 测试、typecheck、server+web build、diff check 全部通过。
+- Task 6：Windows 集成和非浏览器实机验证完成。
+- Windows bootstrap 使用 SHA256 stamp + npm ls 完整性判断；重复运行跳过 npm ci，依赖漂移时自动重装。
+- Windows PowerShell 5.1 的 UTF-8 无 BOM ParserError 已用 TDD 修复；bootstrap 测试增加到 6 项。
+- 本地完整验证：7 个测试文件、118/118 测试、typecheck、server+web build、diff check 全部通过。
 - 未安装或执行 Playwright 浏览器，未开始 E2E。
 
 [Windows 检查点]
 - 路径：D:\Work\Work-Project\delta-shadow-runner
-- 已同步到旧核心检查点 53e2d64；当时 Windows 实跑 npm ci、43/43 核心测试、typecheck 和 Vite build 均通过。
-- 2026-07-14 恢复时 SSH 健康检查曾通过，随后同步前 TCP 22 返回 Host is down，判断为主机已关机或休眠。
-- 最新代码 ab9718e 尚未在 Windows 拉取和实测；不得把本地结果当作 Windows 验证通过。
+- 已同步到 c3baae1，main 跟踪 origin/main，工作区干净；Node v24.14.0、npm 11.9.0。
+- 实测首次安装、重复跳过、stamp 损坏、package-lock 漂移、npm ls 损坏和 ForceInstall 六条路径；每次测试均为 118/118。
+- Windows typecheck、server build 和 Vite Web build 通过，npm ci audit 为 0 漏洞。
+- 编译产物 smoke 通过：静态首页、health、snapshot、start/inject-stuck/pause/reset、非法控制 400、WebSocket connection/idle/localizing/recovering 和 SIGTERM 优雅关闭。
+- 清理验证通过：临时文件不存在、端口 4199 无监听、stamp 匹配 lock、npm ls 返回 0。
+- 本机 PowerShell ExecutionPolicy 各作用域均为 Undefined，直接 .\init.ps1 会按默认 Restricted 被拒；使用 process-only Bypass，不修改持久策略。
+- Windows 已配置 GitHub origin，但 Windows 自己尚未信任 GitHub Host Key；本轮代码通过已验证 Git bundle 经 win-dev SSH 同步。
 
 [后续规划]
-- Task 6：唤醒 Windows 后从 GitHub 拉取最新 main，实测 init.ps1 首次安装、重复跳过、stamp/lock 漂移、npm ls 损坏和 ForceInstall。
-- Task 6：在 Windows 执行 117+ 测试、server+web build，并启动编译产物验证 health、snapshot、四项控制、WebSocket 和优雅关闭。
-- Task 6 完成后更新 feature-list.json 的 windows-verification 证据。
-- Task 7：开始 Playwright E2E 前必须先向用户同步并等待明确确认；浏览器页面加载、恢复流程和视觉断点尚未验证。
+- Task 7：当前已到用户同步门；等待明确确认后再安装/启动 Playwright Chromium。
+- Task 7：浏览器 E2E 将验证页面加载、开始任务、路线推进、注入卡住、恢复状态、重置和视觉断点。
+- Task 7：任一步骤失败则整体失败；修复后重跑 118 项测试、构建和 E2E。
 
 [恢复开发]
 - 本机：git clone git@github.com:Lvjinhong/delta-shadow-runner.git
-- Windows：进入 D:\Work\Work-Project\delta-shadow-runner，配置/核对 origin 后拉取 main，再执行 .\init.ps1 -Mode test 和 .\init.ps1 -Mode build。
+- Windows：进入 D:\Work\Work-Project\delta-shadow-runner。
+- 测试：powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode test
+- 构建：powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode build
 - 继续时先重读 docs/superpowers/specs/2026-07-14-shadow-runner-design.md 和 docs/superpowers/plans/2026-07-14-shadow-runner-implementation.md。
 
 [安全边界]

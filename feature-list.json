@@ -1,7 +1,7 @@
 {
   "project": "Shadow Runner Lab",
-  "version": 3,
-  "lastUpdated": "2026-07-14",
+  "version": 4,
+  "lastUpdated": "2026-07-15",
   "features": [
     {
       "id": "route-planning",
@@ -43,18 +43,22 @@
     {
       "id": "windows-verification",
       "description": "在 Windows 开发机完成安装、测试、构建和 API 冒烟",
-      "passes": false,
+      "passes": true,
       "evidence": [
-        "Windows 已验证核心检查点 53e2d64：npm ci、43/43、typecheck、Vite build",
-        "最新代码 ab9718e 尚待同步和 Windows API/WebSocket smoke",
-        "2026-07-14 同步前 TCP 22 返回 Host is down，未伪报 Windows 验证通过"
+        "Windows c3baae1：Node v24.14.0、npm 11.9.0、118/118、typecheck、server+web build",
+        "首次安装、重复跳过、stamp/lock 漂移、npm ls 损坏和 ForceInstall 六条 bootstrap 路径实测通过",
+        "编译产物 smoke 覆盖静态首页、health、snapshot、四项控制、非法控制 400、WebSocket 恢复广播和 SIGTERM 关闭",
+        "清理后工作区干净、端口 4199 无监听、stamp 匹配 lock、npm ls 返回 0"
       ]
     },
     {
       "id": "e2e-gate",
       "description": "用户确认后执行完整浏览器 E2E",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "Task 6 非浏览器 Windows 验证已完成，当前等待用户明确确认",
+        "尚未安装或运行 Playwright Chromium"
+      ]
     }
   ]
 }
