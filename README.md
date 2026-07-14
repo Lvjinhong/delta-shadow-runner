@@ -63,7 +63,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode dev
 
 看到两个服务都启动后，打开：
 
-<http://127.0.0.1:5173>
+<http://localhost:5173>
 
 停止服务：回到终端按 `Ctrl+C`。
 
@@ -78,7 +78,7 @@ npm run dev
 
 然后打开：
 
-<http://127.0.0.1:5173>
+<http://localhost:5173>
 
 停止服务：回到终端按 `Ctrl+C`。
 
@@ -430,7 +430,7 @@ npm run test:e2e
 ### 页面一直显示“遥测连接中”
 
 1. 确认开发模式终端中 `server` 和 `web` 两个进程都已启动；
-2. 确认访问开发地址 `http://127.0.0.1:5173`，不是其他端口；
+2. 确认访问开发地址 `http://localhost:5173`，不是其他端口；
 3. 请求 `http://127.0.0.1:4173/api/health`；
 4. 检查端口是否被旧进程占用；
 5. 查看浏览器控制台和终端中的具体错误。
