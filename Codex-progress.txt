@@ -23,7 +23,7 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 
 [Windows 检查点]
 - 路径：D:\Work\Work-Project\delta-shadow-runner
-- 已同步到 434a697，main 跟踪 origin/main，工作区干净；Node v24.14.0、npm 11.9.0。
+- 功能验证基线为 434a697；Windows main 与交付归档已同步且工作区干净，Node v24.14.0、npm 11.9.0。
 - 实测首次安装、重复跳过、stamp 损坏、package-lock 漂移、npm ls 损坏和 ForceInstall 六条路径；每次测试均为 118/118。
 - Windows typecheck、server build 和 Vite Web build 通过，npm ci audit 为 0 漏洞。
 - 编译产物 smoke 通过：静态首页、health、snapshot、start/inject-stuck/pause/reset、非法控制 400、WebSocket connection/idle/localizing/recovering 和 SIGTERM 优雅关闭。
