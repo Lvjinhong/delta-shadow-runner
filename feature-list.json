@@ -1,6 +1,6 @@
 {
   "project": "Shadow Runner Lab",
-  "version": 2,
+  "version": 3,
   "lastUpdated": "2026-07-14",
   "features": [
     {
@@ -17,7 +17,7 @@
       "description": "模拟卡住后进入恢复状态并继续原路线",
       "passes": true,
       "evidence": [
-        "tests/core/engine.test.ts 24/24",
+        "tests/core/engine.test.ts 25/25",
         "独立反例复核覆盖跳点、倒退、连续 stuck 和乱序观测"
       ]
     },
@@ -26,15 +26,19 @@
       "description": "REST 与 WebSocket 提供快照、控制和遥测",
       "passes": true,
       "evidence": [
-        "tests/server/app.test.ts 20/20",
+        "tests/server/app.test.ts 22/22",
         "编译产物 health、错误 envelope、控制、WebSocket 和关闭流程 smoke 通过"
       ]
     },
     {
       "id": "control-dashboard",
       "description": "Web 控制台展示路线、状态、指标和事件",
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "tests/web/model.test.ts、api.test.ts、style.test.ts 共 46/46",
+        "SVG 路线、四项控制、WS 握手/重连、capabilities、对比度和可访问性已独立复核 PASS",
+        "npm run build 产出本地 Web bundle；真实浏览器视觉与交互留待 E2E 门后验证"
+      ]
     },
     {
       "id": "windows-verification",
@@ -42,7 +46,8 @@
       "passes": false,
       "evidence": [
         "Windows 已验证核心检查点 53e2d64：npm ci、43/43、typecheck、Vite build",
-        "最新服务端提交 ba52fcc 尚待同步和 Windows API/WebSocket smoke"
+        "最新代码 ab9718e 尚待同步和 Windows API/WebSocket smoke",
+        "2026-07-14 同步前 TCP 22 返回 Host is down，未伪报 Windows 验证通过"
       ]
     },
     {
