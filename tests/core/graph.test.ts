@@ -148,6 +148,28 @@ describe("findShortestPath", () => {
     );
   });
 
+  it("接受坐标距离溢出但单项仍有限的有效路线", () => {
+    const finiteExtremes: RouteGraph = {
+      start: {
+        id: "start",
+        x: -Number.MAX_VALUE,
+        y: 0,
+        edges: [{ targetNodeId: "target", cost: Number.MAX_VALUE }],
+      },
+      target: {
+        id: "target",
+        x: Number.MAX_VALUE,
+        y: 0,
+        edges: [],
+      },
+    };
+
+    expect(findShortestPath(finiteExtremes, "start", "target")).toEqual([
+      "start",
+      "target",
+    ]);
+  });
+
   it("支持零权边并仍选择最低代价路径", () => {
     const zeroCostGraph: RouteGraph = {
       start: {

@@ -5,12 +5,16 @@ interface SearchScores {
   readonly estimatedTotal: ReadonlyMap<string, number>;
 }
 
+function hasNode(graph: RouteGraph, nodeId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(graph, nodeId);
+}
+
 function requireNode(
   graph: RouteGraph,
   nodeId: string,
   role: "起点" | "终点",
 ): RouteNode {
-  const node = graph[nodeId];
+  const node = hasNode(graph, nodeId) ? graph[nodeId] : undefined;
 
   if (!node) {
     throw new Error(`路线图中不存在${role}节点 "${nodeId}"`);
@@ -19,8 +23,12 @@ function requireNode(
   return node;
 }
 
-function validateEdge(graph: RouteGraph, sourceNodeId: string, edge: RouteEdge): void {
-  if (!graph[edge.targetNodeId]) {
+function validateEdge(
+  graph: RouteGraph,
+  sourceNodeId: string,
+  edge: RouteEdge,
+): void {
+  if (!hasNode(graph, edge.targetNodeId)) {
     throw new Error(
       `节点 "${sourceNodeId}" 的边指向未知节点 "${edge.targetNodeId}"`,
     );
@@ -30,6 +38,18 @@ function validateEdge(graph: RouteGraph, sourceNodeId: string, edge: RouteEdge):
     throw new Error(
       `节点 "${sourceNodeId}" 到 "${edge.targetNodeId}" 的代价必须是非负有限数`,
     );
+  }
+}
+
+function validateGraph(graph: RouteGraph): void {
+  for (const [nodeId, node] of Object.entries(graph)) {
+    if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) {
+      throw new Error(`节点 "${nodeId}" 的坐标必须是有限数`);
+    }
+
+    for (const edge of node.edges) {
+      validateEdge(graph, nodeId, edge);
+    }
   }
 }
 
@@ -44,20 +64,23 @@ function calculateHeuristicScale(graph: RouteGraph): number {
     for (const edge of source.edges) {
       const target = graph[edge.targetNodeId];
 
-      // 悬空边和非法代价会在实际展开时给出上下文更完整的错误。
-      if (!target || !Number.isFinite(edge.cost) || edge.cost < 0) {
+      // validateGraph 已检查边；此分支仅用于收窄 Record 索引结果。
+      if (!target) {
         continue;
       }
 
       const edgeDistance = distance(source, target);
-      if (edgeDistance === 0) {
+      if (!Number.isFinite(edgeDistance) || edgeDistance === 0) {
         continue;
       }
 
-      minimumCostPerDistance = Math.min(
-        minimumCostPerDistance,
-        edge.cost / edgeDistance,
-      );
+      const costPerDistance = edge.cost / edgeDistance;
+      if (Number.isFinite(costPerDistance)) {
+        minimumCostPerDistance = Math.min(
+          minimumCostPerDistance,
+          costPerDistance,
+        );
+      }
     }
   }
 
@@ -109,6 +132,21 @@ function reconstructPath(
   return reversedPath.reverse();
 }
 
+function estimateTotalCost(
+  traveledCost: number,
+  node: RouteNode,
+  targetNode: RouteNode,
+  heuristicScale: number,
+): number {
+  const heuristicCost = heuristicScale * distance(node, targetNode);
+  if (!Number.isFinite(heuristicCost)) {
+    return traveledCost;
+  }
+
+  const estimatedTotal = traveledCost + heuristicCost;
+  return Number.isFinite(estimatedTotal) ? estimatedTotal : traveledCost;
+}
+
 function updateNeighborScores(
   scores: SearchScores,
   currentNodeId: string,
@@ -123,6 +161,12 @@ function updateNeighborScores(
   }
 
   const nextCost = currentCost + edge.cost;
+  if (!Number.isFinite(nextCost)) {
+    throw new Error(
+      `节点 "${currentNodeId}" 到 "${edge.targetNodeId}" 的累计代价超出有限数范围`,
+    );
+  }
+
   const knownCost = scores.traveled.get(edge.targetNodeId);
   if (knownCost !== undefined && nextCost >= knownCost) {
     return undefined;
@@ -133,7 +177,7 @@ function updateNeighborScores(
   traveled.set(edge.targetNodeId, nextCost);
   estimatedTotal.set(
     edge.targetNodeId,
-    nextCost + heuristicScale * distance(neighborNode, targetNode),
+    estimateTotalCost(nextCost, neighborNode, targetNode, heuristicScale),
   );
 
   return { traveled, estimatedTotal };
@@ -144,6 +188,7 @@ export function findShortestPath(
   startNodeId: string,
   targetNodeId: string,
 ): string[] {
+  validateGraph(graph);
   const startNode = requireNode(graph, startNodeId, "起点");
   const targetNode = requireNode(graph, targetNodeId, "终点");
 
@@ -157,7 +202,7 @@ export function findShortestPath(
   let scores: SearchScores = {
     traveled: new Map([[startNodeId, 0]]),
     estimatedTotal: new Map([
-      [startNodeId, heuristicScale * distance(startNode, targetNode)],
+      [startNodeId, estimateTotalCost(0, startNode, targetNode, heuristicScale)],
     ]),
   };
 
