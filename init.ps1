@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("dev", "test", "build", "start")]
     [string]$Mode = "dev",
 
