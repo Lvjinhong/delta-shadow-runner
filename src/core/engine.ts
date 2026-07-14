@@ -110,6 +110,12 @@ export class RunnerEngine {
     return this.snapshot;
   }
 
+  get canResume(): boolean {
+    return (
+      this.snapshot.status === "paused" && this.resumableState !== undefined
+    );
+  }
+
   start(): EngineSnapshot {
     if (this.snapshot.status === "paused" && this.resumableState) {
       const tick = this.snapshot.tick + 1;

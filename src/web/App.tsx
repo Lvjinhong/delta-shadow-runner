@@ -213,51 +213,61 @@ export function App(): React.JSX.Element {
   });
   const [loading, setLoading] = useState(true);
   const [pendingCommand, setPendingCommand] = useState<ControlCommand | null>(null);
-  const [error, setError] = useState("");
+  const [connectionError, setConnectionError] = useState("");
+  const [controlError, setControlError] = useState("");
   const commandAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(false);
 
   useEffect(() => {
+    mountedRef.current = true;
+    let effectActive = true;
+    const canUpdate = (): boolean => effectActive && mountedRef.current;
     const initialAbort = new AbortController();
-    let active = true;
     const client = createTelemetryClient({
       onData(data) {
-        if (active) {
+        if (canUpdate()) {
           setTelemetry(data);
           setLoading(false);
+          setConnectionError("");
         }
       },
       onStatus(status) {
-        if (active) {
+        if (canUpdate()) {
           setConnection(status);
+          if (status.phase === "connected") {
+            setConnectionError("");
+          }
         }
       },
       onError(nextError) {
-        if (active) {
-          setError(nextError.message);
+        if (canUpdate()) {
+          setConnectionError(nextError.message);
         }
       },
     });
 
     void requestSnapshot(initialAbort.signal)
       .then((data) => {
-        if (active) {
+        if (canUpdate()) {
           setTelemetry(data);
+          setConnectionError("");
         }
       })
       .catch((nextError: unknown) => {
-        if (active) {
-          setError(errorMessage(nextError));
+        if (canUpdate()) {
+          setConnectionError(errorMessage(nextError));
         }
       })
       .finally(() => {
-        if (active) {
+        if (canUpdate()) {
           setLoading(false);
         }
       });
     client.connect();
 
     return () => {
-      active = false;
+      effectActive = false;
+      mountedRef.current = false;
       initialAbort.abort();
       commandAbortRef.current?.abort();
       client.dispose();
@@ -265,40 +275,45 @@ export function App(): React.JSX.Element {
   }, []);
 
   const runControl = async (command: ControlCommand): Promise<void> => {
-    if (pendingCommand) {
+    if (!mountedRef.current || pendingCommand || commandAbortRef.current) {
       return;
     }
-    commandAbortRef.current?.abort();
     const controller = new AbortController();
     commandAbortRef.current = controller;
     setPendingCommand(command);
-    setError("");
+    setControlError("");
     try {
       const data = await sendControl(command, controller.signal);
-      setTelemetry(data);
+      if (mountedRef.current && commandAbortRef.current === controller) {
+        setTelemetry(data);
+        setConnectionError("");
+      }
     } catch (nextError) {
       const message = errorMessage(nextError);
-      if (message) {
-        setError(message);
+      if (
+        message &&
+        mountedRef.current &&
+        commandAbortRef.current === controller
+      ) {
+        setControlError(message);
       }
     } finally {
       if (commandAbortRef.current === controller) {
         commandAbortRef.current = null;
-        setPendingCommand(null);
+        if (mountedRef.current) {
+          setPendingCommand(null);
+        }
       }
     }
   };
 
   const connectionMeta = connectionPresentation(connection);
   const snapshot = telemetry?.snapshot;
+  const capabilities = telemetry?.capabilities;
   const statusMeta = snapshot ? statusPresentation(snapshot.status) : null;
-  const isActive =
-    snapshot?.status === "localizing" ||
-    snapshot?.status === "navigating" ||
-    snapshot?.status === "recovering";
-  const canStart = snapshot?.status === "idle" || snapshot?.status === "paused";
   const controlsDisabled = loading || !snapshot || pendingCommand !== null;
   const visibleEvents = snapshot ? [...snapshot.events].slice(-12).reverse() : [];
+  const displayedError = controlError || connectionError;
 
   return (
     <div className="app-shell">
@@ -327,10 +342,17 @@ export function App(): React.JSX.Element {
         <span className="safety-copy">不读取游戏进程，不发送键鼠输入</span>
       </div>
 
-      {error ? (
+      {displayedError ? (
         <div className="error-banner" role="alert">
-          <span><b>SYS ERR</b> {error}</span>
-          <button type="button" onClick={() => setError("")} aria-label="关闭错误提示">×</button>
+          <span><b>SYS ERR</b> {displayedError}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setControlError("");
+              setConnectionError("");
+            }}
+            aria-label="关闭错误提示"
+          >×</button>
         </div>
       ) : null}
 
@@ -382,7 +404,7 @@ export function App(): React.JSX.Element {
                 <button
                   className="control-button control-button--primary"
                   type="button"
-                  disabled={controlsDisabled || !canStart}
+                  disabled={controlsDisabled || !capabilities?.canStart}
                   onClick={() => void runControl("start")}
                 >
                   <span>01</span>{pendingCommand === "start" ? "请求中…" : controlLabels.start}
@@ -390,7 +412,7 @@ export function App(): React.JSX.Element {
                 <button
                   className="control-button"
                   type="button"
-                  disabled={controlsDisabled || !isActive}
+                  disabled={controlsDisabled || !capabilities?.canPause}
                   onClick={() => void runControl("pause")}
                 >
                   <span>02</span>{pendingCommand === "pause" ? "请求中…" : controlLabels.pause}
@@ -398,7 +420,7 @@ export function App(): React.JSX.Element {
                 <button
                   className="control-button"
                   type="button"
-                  disabled={controlsDisabled}
+                  disabled={controlsDisabled || !capabilities?.canReset}
                   onClick={() => void runControl("reset")}
                 >
                   <span>03</span>{pendingCommand === "reset" ? "请求中…" : controlLabels.reset}
@@ -406,7 +428,7 @@ export function App(): React.JSX.Element {
                 <button
                   className="control-button control-button--danger"
                   type="button"
-                  disabled={controlsDisabled || !isActive}
+                  disabled={controlsDisabled || !capabilities?.canInjectStuck}
                   onClick={() => void runControl("inject-stuck")}
                 >
                   <span>04</span>{pendingCommand === "inject-stuck" ? "请求中…" : controlLabels["inject-stuck"]}

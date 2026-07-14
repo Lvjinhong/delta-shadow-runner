@@ -29,6 +29,26 @@ export interface TelemetryClient {
   dispose(): void;
 }
 
+export interface DashboardFetchEnvironment {
+  readonly fetch: typeof fetch;
+}
+
+export interface TelemetrySocket {
+  readonly readyState: number;
+  addEventListener(
+    type: "open" | "message" | "error" | "close",
+    listener: (event: { readonly data?: unknown }) => void,
+  ): void;
+  close(code?: number, reason?: string): void;
+}
+
+export interface TelemetryClientEnvironment extends DashboardFetchEnvironment {
+  readonly createWebSocket: (url: string) => TelemetrySocket;
+  readonly setTimeout: (callback: () => void, delay: number) => unknown;
+  readonly clearTimeout: (handle: unknown) => void;
+  readonly location: { readonly protocol: string; readonly host: string };
+}
+
 const retryDelaysMs = [500, 1_000, 2_000, 4_000, 8_000] as const;
 
 function errorFromUnknown(error: unknown, fallback: string): Error {
@@ -59,8 +79,35 @@ function controlErrorMessage(value: unknown, status: number): string {
   return `控制请求失败（HTTP ${status}）`;
 }
 
-export async function requestSnapshot(signal?: AbortSignal): Promise<TelemetryData> {
-  const response = await fetch("/api/snapshot", {
+function browserFetchEnvironment(): DashboardFetchEnvironment {
+  return {
+    fetch(input, init) {
+      return globalThis.fetch(input, init);
+    },
+  };
+}
+
+function browserTelemetryEnvironment(): TelemetryClientEnvironment {
+  return {
+    ...browserFetchEnvironment(),
+    createWebSocket(url) {
+      return new WebSocket(url) as unknown as TelemetrySocket;
+    },
+    setTimeout(callback, delay) {
+      return window.setTimeout(callback, delay);
+    },
+    clearTimeout(handle) {
+      window.clearTimeout(handle as number);
+    },
+    location: window.location,
+  };
+}
+
+export async function requestSnapshot(
+  signal?: AbortSignal,
+  environment: DashboardFetchEnvironment = browserFetchEnvironment(),
+): Promise<TelemetryData> {
+  const response = await environment.fetch("/api/snapshot", {
     method: "GET",
     headers: { accept: "application/json" },
     signal,
@@ -72,8 +119,9 @@ export async function requestSnapshot(signal?: AbortSignal): Promise<TelemetryDa
 export async function sendControl(
   command: ControlCommand,
   signal?: AbortSignal,
+  environment: DashboardFetchEnvironment = browserFetchEnvironment(),
 ): Promise<TelemetryData> {
-  const response = await fetch(`/api/control/${command}`, {
+  const response = await environment.fetch(`/api/control/${command}`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -83,31 +131,24 @@ export async function sendControl(
     signal,
   });
   const body = await readJson(response);
-  if (
-    !response.ok ||
-    body === null ||
-    typeof body !== "object" ||
-    Array.isArray(body) ||
-    (body as Record<string, unknown>).success !== true
-  ) {
+  if (!response.ok) {
     throw new Error(controlErrorMessage(body, response.status));
   }
-
-  // 控制响应只携带 snapshot；随后读取完整遥测，确保地图与快照来自同一服务端契约。
-  return requestSnapshot(signal);
+  return parseSnapshotEnvelope(body);
 }
 
 export function createTelemetryClient(
   callbacks: TelemetryClientCallbacks,
+  environment: TelemetryClientEnvironment = browserTelemetryEnvironment(),
 ): TelemetryClient {
-  let socket: WebSocket | undefined;
-  let retryTimer: number | undefined;
+  let socket: TelemetrySocket | undefined;
+  let retryTimer: unknown = undefined;
   let retryIndex = 0;
   let disposed = false;
 
   const clearRetry = (): void => {
     if (retryTimer !== undefined) {
-      window.clearTimeout(retryTimer);
+      environment.clearTimeout(retryTimer);
       retryTimer = undefined;
     }
   };
@@ -131,7 +172,7 @@ export function createTelemetryClient(
       attempt: retryIndex,
       retryInMs: delay,
     });
-    retryTimer = window.setTimeout(() => {
+    retryTimer = environment.setTimeout(() => {
       retryTimer = undefined;
       openSocket();
     }, delay);
@@ -152,23 +193,18 @@ export function createTelemetryClient(
       });
     }
 
-    let nextSocket: WebSocket;
+    let nextSocket: TelemetrySocket;
     try {
-      nextSocket = new WebSocket(buildWebSocketUrl(window.location));
+      nextSocket = environment.createWebSocket(
+        buildWebSocketUrl(environment.location),
+      );
     } catch (error) {
       callbacks.onError(errorFromUnknown(error, "无法创建遥测连接"));
       scheduleReconnect();
       return;
     }
     socket = nextSocket;
-
-    nextSocket.addEventListener("open", () => {
-      if (disposed || socket !== nextSocket) {
-        return;
-      }
-      retryIndex = 0;
-      callbacks.onStatus({ phase: "connected", attempt: 1 });
-    });
+    let protocolReady = false;
 
     nextSocket.addEventListener("message", (event) => {
       if (disposed || socket !== nextSocket) {
@@ -180,6 +216,11 @@ export function createTelemetryClient(
       }
       try {
         const message = parseTelemetryMessage(event.data);
+        if (!protocolReady) {
+          protocolReady = true;
+          retryIndex = 0;
+          callbacks.onStatus({ phase: "connected", attempt: 1 });
+        }
         if (message.type === "snapshot") {
           callbacks.onData(message.data);
         }
@@ -217,7 +258,7 @@ export function createTelemetryClient(
       clearRetry();
       const activeSocket = socket;
       socket = undefined;
-      if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) {
+      if (activeSocket && activeSocket.readyState < 2) {
         activeSocket.close(1000, "dashboard disposed");
       }
     },

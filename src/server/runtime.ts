@@ -5,6 +5,7 @@ import {
 } from "../core/scenario.js";
 import type {
   EngineSnapshot,
+  RunnerCapabilities,
   RunnerScenario,
   SimulationSource,
 } from "../core/types.js";
@@ -65,6 +66,20 @@ export class RunnerRuntime {
 
   get subscriberCount(): number {
     return this.listeners.size;
+  }
+
+  get capabilities(): RunnerCapabilities {
+    const status = this.engine.getSnapshot().status;
+    const active =
+      status === "localizing" ||
+      status === "navigating" ||
+      status === "recovering";
+    return Object.freeze({
+      canStart: status === "idle" || this.engine.canResume,
+      canPause: active,
+      canReset: true,
+      canInjectStuck: active,
+    });
   }
 
   getSnapshot(): EngineSnapshot {
@@ -130,7 +145,9 @@ export class RunnerRuntime {
         snapshot = this.engine.reset();
         break;
       case "inject-stuck":
-        this.source.injectStuck();
+        if (this.capabilities.canInjectStuck) {
+          this.source.injectStuck();
+        }
         snapshot = this.engine.getSnapshot();
         break;
     }

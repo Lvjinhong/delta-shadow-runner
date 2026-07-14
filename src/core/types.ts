@@ -57,6 +57,13 @@ export interface RuntimeMetrics {
   readonly routeProgress: number;
 }
 
+export interface RunnerCapabilities {
+  readonly canStart: boolean;
+  readonly canPause: boolean;
+  readonly canReset: boolean;
+  readonly canInjectStuck: boolean;
+}
+
 export interface RunnerEvent {
   readonly tick: number;
   readonly kind: "info" | "warning" | "error";

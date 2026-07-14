@@ -1,6 +1,7 @@
 import type {
   ActionIntent,
   EngineSnapshot,
+  RunnerCapabilities,
   RunnerEvent,
   RunnerStatus,
   RuntimeMetrics,
@@ -39,6 +40,7 @@ export interface ScenarioEdgeTelemetry {
 export interface TelemetryData {
   readonly snapshot: EngineSnapshot;
   readonly scenario: ScenarioTelemetry;
+  readonly capabilities: RunnerCapabilities;
 }
 
 export type TelemetryMessage =
@@ -117,6 +119,13 @@ function requireRecord(value: unknown, path: string): Record<string, unknown> {
 function requireString(value: unknown, path: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new DashboardProtocolError(`${path} 必须是非空字符串`);
+  }
+  return value;
+}
+
+function requireBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new DashboardProtocolError(`${path} 必须是布尔值`);
   }
   return value;
 }
@@ -359,6 +368,28 @@ function validateTelemetryData(value: unknown): TelemetryData {
   const data = requireRecord(value, "telemetry.data");
   const snapshot = validateSnapshot(data.snapshot);
   const scenario = validateScenario(data.scenario);
+  const capabilitiesValue = requireRecord(
+    data.capabilities,
+    "telemetry.data.capabilities",
+  );
+  const capabilities: RunnerCapabilities = {
+    canStart: requireBoolean(
+      capabilitiesValue.canStart,
+      "telemetry.data.capabilities.canStart",
+    ),
+    canPause: requireBoolean(
+      capabilitiesValue.canPause,
+      "telemetry.data.capabilities.canPause",
+    ),
+    canReset: requireBoolean(
+      capabilitiesValue.canReset,
+      "telemetry.data.capabilities.canReset",
+    ),
+    canInjectStuck: requireBoolean(
+      capabilitiesValue.canInjectStuck,
+      "telemetry.data.capabilities.canInjectStuck",
+    ),
+  };
   const nodeIds = new Set(scenario.map.nodes.map((node) => node.id));
   const referencedNodeIds = [
     snapshot.currentNodeId,
@@ -374,7 +405,7 @@ function validateTelemetryData(value: unknown): TelemetryData {
   ) {
     throw new DashboardProtocolError("移动意图引用了场景中不存在的节点");
   }
-  return { snapshot, scenario };
+  return { snapshot, scenario, capabilities };
 }
 
 export function statusPresentation(status: RunnerStatus): StatusPresentation {

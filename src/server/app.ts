@@ -9,7 +9,11 @@ import express, {
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 
-import type { EngineSnapshot, RunnerScenario } from "../core/types.js";
+import type {
+  EngineSnapshot,
+  RunnerCapabilities,
+  RunnerScenario,
+} from "../core/types.js";
 import {
   RunnerRuntime,
   type ControlCommand,
@@ -49,6 +53,7 @@ export interface ScenarioTelemetry {
 export interface TelemetryData {
   readonly snapshot: EngineSnapshot;
   readonly scenario: ScenarioTelemetry;
+  readonly capabilities: RunnerCapabilities;
 }
 
 export interface RunnerAppOptions {
@@ -104,6 +109,7 @@ function telemetryData(
   return {
     snapshot,
     scenario: scenarioTelemetry(runtime.scenario),
+    capabilities: runtime.capabilities,
   };
 }
 
@@ -152,7 +158,7 @@ export function createRunnerApp(
     }
 
     const snapshot = runtime.control(command.data as ControlCommand);
-    res.json(success({ snapshot }));
+    res.json(success(telemetryData(runtime, snapshot)));
   });
 
   app.all(/^\/api\/control(?:\/.*)?$/, (_req, res) => {
