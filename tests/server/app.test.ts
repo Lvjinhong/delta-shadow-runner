@@ -4,6 +4,8 @@ import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 
+import { RunnerEngine } from "../../src/core/engine.js";
+import { defaultScenario } from "../../src/core/scenario.js";
 import { createRunnerApp, createRunnerServer } from "../../src/server/app.js";
 import {
   RunnerRuntime,
@@ -189,6 +191,67 @@ describe("Runner REST API", () => {
         ]),
       },
     });
+    expect(response.body.data.capabilities).toEqual({
+      canStart: true,
+      canPause: false,
+      canReset: true,
+      canInjectStuck: false,
+    });
+  });
+
+  it("控制响应直接返回与快照接口相同的完整遥测和 capabilities", async () => {
+    const runtime = new RunnerRuntime();
+    const app = createRunnerApp(runtime);
+
+    const response = await request(app).post("/api/control/start").send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      snapshot: { status: "localizing" },
+      scenario: { id: "fixed-training-route" },
+      capabilities: {
+        canStart: false,
+        canPause: true,
+        canReset: true,
+        canInjectStuck: true,
+      },
+    });
+    expect(Object.keys(response.body.data).sort()).toEqual([
+      "capabilities",
+      "scenario",
+      "snapshot",
+    ]);
+  });
+
+  it("runtime capabilities 区分人工暂停与观测异常后的安全停止", () => {
+    const manualRuntime = new RunnerRuntime();
+    expect(manualRuntime.capabilities).toEqual({
+      canStart: true,
+      canPause: false,
+      canReset: true,
+      canInjectStuck: false,
+    });
+    manualRuntime.control("start");
+    expect(manualRuntime.capabilities).toEqual({
+      canStart: false,
+      canPause: true,
+      canReset: true,
+      canInjectStuck: true,
+    });
+    manualRuntime.control("pause");
+    expect(manualRuntime.capabilities.canStart).toBe(true);
+
+    const safetyEngine = new RunnerEngine(defaultScenario);
+    const safetyRuntime = new RunnerRuntime({ engine: safetyEngine });
+    safetyRuntime.control("start");
+    safetyEngine.step({ nodeId: "missing", confidence: 0.9, capturedAt: 0 });
+    expect(safetyRuntime.getSnapshot().status).toBe("paused");
+    expect(safetyRuntime.capabilities).toEqual({
+      canStart: false,
+      canPause: false,
+      canReset: true,
+      canInjectStuck: false,
+    });
   });
 
   it.each([
@@ -343,6 +406,7 @@ describe("Runner WebSocket", () => {
       data: {
         snapshot: { status: "idle" },
         scenario: { id: "fixed-training-route" },
+        capabilities: { canStart: true, canPause: false },
       },
     });
 

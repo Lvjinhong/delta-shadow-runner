@@ -10,6 +10,12 @@ import {
 } from "../../src/web/model.js";
 
 const telemetryData = {
+  capabilities: {
+    canStart: false,
+    canPause: true,
+    canReset: true,
+    canInjectStuck: true,
+  },
   snapshot: {
     runId: "run-7",
     status: "navigating",
@@ -106,6 +112,7 @@ describe("dashboard view model", () => {
     });
 
     expect(parsed).toEqual(telemetryData);
+    expect(parsed.capabilities).toEqual(telemetryData.capabilities);
     expect(parsed.snapshot.route).toEqual(["spawn-a", "relay", "extract"]);
   });
 
@@ -148,6 +155,25 @@ describe("dashboard view model", () => {
             ],
           },
         },
+      },
+      error: null,
+    },
+    {
+      success: true,
+      data: {
+        ...telemetryData,
+        capabilities: {
+          ...telemetryData.capabilities,
+          canStart: "yes",
+        },
+      },
+      error: null,
+    },
+    {
+      success: true,
+      data: {
+        snapshot: telemetryData.snapshot,
+        scenario: telemetryData.scenario,
       },
       error: null,
     },

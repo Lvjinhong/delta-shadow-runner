@@ -100,6 +100,28 @@ describe("RunnerEngine", () => {
     expect(reset.runId).not.toBe(paused.runId);
   });
 
+  it("只允许人工暂停恢复，安全停止不能被 start 猜测为可恢复", () => {
+    const manuallyPaused = new RunnerEngine(defaultScenario);
+    expect(manuallyPaused.canResume).toBe(false);
+    manuallyPaused.start();
+    manuallyPaused.step(observation("spawn-a", 0));
+    manuallyPaused.pause();
+    expect(manuallyPaused.canResume).toBe(true);
+    expect(manuallyPaused.start().status).toBe("navigating");
+    expect(manuallyPaused.canResume).toBe(false);
+
+    const safetyStopped = new RunnerEngine(defaultScenario);
+    safetyStopped.start();
+    safetyStopped.step({
+      nodeId: "missing",
+      confidence: 0.9,
+      capturedAt: 0,
+    });
+    expect(safetyStopped.getSnapshot().status).toBe("paused");
+    expect(safetyStopped.canResume).toBe(false);
+    expect(safetyStopped.start().status).toBe("paused");
+  });
+
   it("低置信观测触发重新定位，高置信观测后重新规划", () => {
     const engine = new RunnerEngine(defaultScenario);
     engine.start();
