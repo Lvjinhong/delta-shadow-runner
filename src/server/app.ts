@@ -222,9 +222,13 @@ export function createRunnerServer(
   const app = createRunnerApp(runtime, options);
   const server = createServer(app);
   const webSocketServer = new WebSocketServer({ server, path: "/ws" });
-  let closed = false;
+  let lifecycle: "open" | "closing" | "closed" = "open";
+  let closePromise: Promise<void> | undefined;
 
   webSocketServer.on("connection", (socket) => {
+    socket.on("error", () => {
+      // ws 会负责关闭协议错误连接；监听器用于阻止 error 冒泡为进程级异常。
+    });
     sendJson(socket, {
       type: "connection",
       data: { status: "connected", mode: "simulation" },
@@ -249,6 +253,9 @@ export function createRunnerServer(
     server,
     webSocketServer,
     listen(port, host = "127.0.0.1") {
+      if (lifecycle !== "open") {
+        return Promise.reject(new Error("Runner 服务已关闭，不能重新监听"));
+      }
       if (server.listening) {
         return Promise.resolve();
       }
@@ -266,31 +273,42 @@ export function createRunnerServer(
         server.listen(port, host);
       });
     },
-    async close() {
-      if (closed) {
-        return;
+    close() {
+      if (closePromise) {
+        return closePromise;
       }
-      closed = true;
-      unsubscribe();
-      runtime.stop();
+      lifecycle = "closing";
+      closePromise = (async () => {
+        unsubscribe();
+        runtime.stop();
 
-      for (const client of webSocketServer.clients) {
-        client.terminate();
-      }
-      await new Promise<void>((resolve) => {
-        webSocketServer.close(() => resolve());
-      });
-      if (server.listening) {
+        for (const client of webSocketServer.clients) {
+          client.terminate();
+        }
         await new Promise<void>((resolve, reject) => {
-          server.close((error) => {
-            if (error) {
+          webSocketServer.close((error) => {
+            if (error && server.listening) {
               reject(error);
               return;
             }
             resolve();
           });
         });
-      }
+        if (server.listening) {
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => {
+              if (error) {
+                reject(error);
+                return;
+              }
+              resolve();
+            });
+          });
+        }
+      })().finally(() => {
+        lifecycle = "closed";
+      });
+      return closePromise;
     },
   };
 }
