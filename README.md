@@ -468,4 +468,3 @@ npm run test:e2e
 
 - [`docs/superpowers/specs/2026-07-14-shadow-runner-design.md`](docs/superpowers/specs/2026-07-14-shadow-runner-design.md)
 - [`docs/superpowers/plans/2026-07-14-shadow-runner-implementation.md`](docs/superpowers/plans/2026-07-14-shadow-runner-implementation.md)
-
