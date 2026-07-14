@@ -4,7 +4,9 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = resolve(import.meta.dirname, "..");
-const script = readFileSync(resolve(projectRoot, "init.ps1"), "utf8");
+const scriptPath = resolve(projectRoot, "init.ps1");
+const scriptBytes = readFileSync(scriptPath);
+const script = scriptBytes.toString("utf8");
 
 function indexOfOrThrow(fragment: string, fromIndex = 0): number {
   const index = script.indexOf(fragment, fromIndex);
@@ -15,6 +17,10 @@ function indexOfOrThrow(fragment: string, fromIndex = 0): number {
 }
 
 describe("Windows bootstrap contract", () => {
+  it("使用带 BOM 的 UTF-8，确保 Windows PowerShell 5.1 能解析中文文本", () => {
+    expect([...scriptBytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+  });
+
   it("保留 Mode、Node 24 下限，并提供可选 ForceInstall", () => {
     expect(script).toMatch(/\[ValidateSet\("dev", "test", "build", "start"\)\]/);
     expect(script).toMatch(/\[string\]\$Mode\s*=\s*"dev"/);
