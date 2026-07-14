@@ -1,6 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
+import { App } from "./App.js";
+import "./styles.css";
+import "./map.css";
+
 const rootElement = document.getElementById("root");
 
 if (!rootElement) {
@@ -9,6 +13,6 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <main>Shadow Runner Lab 项目基线</main>
+    <App />
   </StrictMode>,
 );

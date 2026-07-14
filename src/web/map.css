@@ -1,0 +1,192 @@
+.map-panel {
+  min-height: 100%;
+}
+
+.map-heading {
+  padding-right: 15px;
+}
+
+.map-readout {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-soft);
+  font: 650 0.68rem/1 "Bahnschrift Condensed", Aptos, sans-serif;
+  letter-spacing: 0.08em;
+}
+
+.map-readout b {
+  color: var(--amber);
+}
+
+.map-stage {
+  position: relative;
+  min-height: 455px;
+  overflow: hidden;
+  background: #090c0d;
+}
+
+.route-map {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 455px;
+}
+
+.map-grid-fill {
+  fill: url(#minor-grid);
+}
+
+.grid-line {
+  fill: none;
+  stroke: #243031;
+  stroke-width: 0.18;
+}
+
+.map-corners {
+  fill: none;
+  stroke: var(--cyan-dim);
+  stroke-width: 0.25;
+}
+
+.route-edge {
+  vector-effect: non-scaling-stroke;
+}
+
+.route-edge--base {
+  stroke: #3c4546;
+  stroke-width: 1px;
+  stroke-dasharray: 2 3;
+}
+
+.route-edge--planned,
+.route-edge--walked {
+  stroke-linecap: square;
+  stroke-width: 0.9;
+}
+
+.route-edge--planned {
+  stroke: var(--amber);
+  filter: drop-shadow(0 0 2px rgba(224, 161, 40, 0.8));
+}
+
+.route-edge--walked {
+  stroke: var(--cyan);
+  stroke-width: 1.15;
+  filter: drop-shadow(0 0 2px rgba(75, 201, 188, 0.7));
+}
+
+.arrow-head {
+  fill: #626e6f;
+}
+
+.edge-cost {
+  fill: #687273;
+  font: 650 1.6px/1 "Bahnschrift Condensed", Aptos, sans-serif;
+  letter-spacing: 0.05em;
+  paint-order: stroke;
+  stroke: #090c0d;
+  stroke-width: 0.8px;
+}
+
+.node-core {
+  fill: #8d9797;
+  stroke: #0a0d0e;
+  stroke-width: 0.6;
+}
+
+.map-node--route .node-core {
+  fill: var(--amber);
+}
+
+.map-node--current .node-core {
+  fill: var(--cyan);
+}
+
+.map-node--target .node-core {
+  stroke: var(--amber-hot);
+}
+
+.position-pulse {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 0.5;
+  transform-origin: center;
+  animation: position-pulse 1.8s ease-out infinite;
+}
+
+.extract-ring {
+  fill: rgba(75, 201, 188, 0.08);
+  stroke: var(--cyan);
+  stroke-width: 0.5;
+}
+
+.spawn-mark {
+  fill: none;
+  stroke: var(--ink-soft);
+  stroke-width: 0.45;
+}
+
+.target-cross {
+  fill: none;
+  stroke: var(--amber-hot);
+  stroke-width: 0.35;
+}
+
+.node-label {
+  fill: #c3cbca;
+  font: 650 2.15px/1 "Bahnschrift Condensed", Aptos, sans-serif;
+  letter-spacing: 0.08em;
+  paint-order: stroke;
+  stroke: #090c0d;
+  stroke-width: 1.1px;
+}
+
+.map-coordinates {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  left: 10px;
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-dim);
+  font: 650 0.58rem/1 "Bahnschrift Condensed", Aptos, sans-serif;
+  letter-spacing: 0.12em;
+  pointer-events: none;
+}
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  min-height: 38px;
+  align-items: center;
+  padding: 7px 13px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+}
+
+.map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-line {
+  width: 18px;
+  height: 2px;
+}
+
+.legend-line--walked { background: var(--cyan); }
+.legend-line--planned { background: var(--amber); }
+
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+}
+
+.legend-dot--current { color: var(--cyan); background: var(--cyan); }
+.legend-dot--extract { color: var(--cyan); border-radius: 50%; }
