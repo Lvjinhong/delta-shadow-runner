@@ -1,6 +1,6 @@
 {
   "project": "Shadow Runner Lab",
-  "version": 4,
+  "version": 5,
   "lastUpdated": "2026-07-15",
   "features": [
     {
@@ -37,7 +37,7 @@
       "evidence": [
         "tests/web/model.test.ts、api.test.ts、style.test.ts 共 46/46",
         "SVG 路线、四项控制、WS 握手/重连、capabilities、对比度和可访问性已独立复核 PASS",
-        "npm run build 产出本地 Web bundle；真实浏览器视觉与交互留待 E2E 门后验证"
+        "Windows Chromium production E2E 验证控制闭环、三档布局、ARIA、键盘操作和 reduced motion，4/4 通过"
       ]
     },
     {
@@ -45,7 +45,7 @@
       "description": "在 Windows 开发机完成安装、测试、构建和 API 冒烟",
       "passes": true,
       "evidence": [
-        "Windows c3baae1：Node v24.14.0、npm 11.9.0、118/118、typecheck、server+web build",
+        "Windows 434a697：Node v24.14.0、npm 11.9.0、118/118、typecheck、server+web build",
         "首次安装、重复跳过、stamp/lock 漂移、npm ls 损坏和 ForceInstall 六条 bootstrap 路径实测通过",
         "编译产物 smoke 覆盖静态首页、health、snapshot、四项控制、非法控制 400、WebSocket 恢复广播和 SIGTERM 关闭",
         "清理后工作区干净、端口 4199 无监听、stamp 匹配 lock、npm ls 返回 0"
@@ -53,11 +53,15 @@
     },
     {
       "id": "e2e-gate",
-      "description": "用户确认后执行完整浏览器 E2E",
-      "passes": false,
+      "description": "在 Windows Chromium 执行完整浏览器 E2E",
+      "passes": true,
       "evidence": [
-        "Task 6 非浏览器 Windows 验证已完成，当前等待用户明确确认",
-        "尚未安装或运行 Playwright Chromium"
+        "Playwright Chromium 149.0.7827.55：4/4 通过，retries=0、workers=1、无 skip",
+        "控制流覆盖启动、暂停、继续、注入卡住、recovering、撤离与重置，使用真实 REST/WebSocket",
+        "1440x900、1024x768、390x844 三档截图与布局断言通过；JUnit tests=4 failures=0 errors=0 skipped=0",
+        "E2E 红灯发现并修复移动端 map.css 加载顺序覆盖断点的问题；修复后全量重跑通过",
+        "独立 evaluator 在 Windows 同一 HEAD 再次只读复跑 4/4 通过，并核对报告与 4 张成功截图已刷新",
+        "结束后端口 4173 无监听、无 Playwright/compiled server 残留进程、Windows 工作区干净"
       ]
     }
   ]
