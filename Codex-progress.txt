@@ -1,17 +1,33 @@
-Shadow Runner Lab 进度
+Shadow Runner Lab 进度归档
 更新时间：2026-07-14
+本地归档提交基线：ba52fcc fix: harden server lifecycle cleanup
+GitHub 归档目标：https://github.com/Lvjinhong/delta-shadow-runner
 
 [已完成]
-- 设计说明和实施计划已落盘。
-- Task 1 项目基线已创建：npm 脚本、TypeScript/Vite/Vitest 配置和 Windows 启动脚本。
+- Task 1：项目基线、统一 npm 脚本、TypeScript/Vite/Vitest 配置和 Windows 启动脚本。
+- Task 2：A* 路径规划；19 项测试通过，并用 2,000 个随机图与参考 Dijkstra 对照通过。
+- Task 3：模拟场景与恢复引擎；24 项状态机测试通过，覆盖定位、导航、卡住恢复、暂停、重置、乱序观测和撤离。
+- Task 4：REST/WebSocket 遥测服务；20 项服务端测试通过，API error envelope、timer、WebSocket 和并发关闭已加固。
+- 本地完整验证：63/63 测试、typecheck、server+web build、production audit 0 漏洞。
+- 本地编译产物 smoke：health、root、404、400、413、start 到 extracted、SIGTERM 退出均通过。
+- 已确认没有本地服务或 4199 端口残留。
 
-[待完成]
-- Task 2：A* 路径规划（TDD）。
-- Task 3：模拟场景与恢复引擎（TDD）。
-- Task 4：REST/WebSocket 运行时（TDD）。
-- Task 5：Web 管理端。
-- Task 6：Windows 非 E2E 验证。
-- Task 7：用户确认后的独立 E2E。
+[Windows 检查点]
+- 路径：D:\Work\Work-Project\delta-shadow-runner
+- 已同步到 commit 53e2d64（核心引擎检查点）。
+- Windows 实跑 npm ci、43/43 核心测试、typecheck 和 Vite build 均通过。
+- Task 4 服务端最新提交 ba52fcc 尚未同步到 Windows；主机关停后需要从 GitHub 拉取或重新同步。
+
+[后续规划]
+- Task 5：实现 Web 管理端，包括 SVG 地图、路线、状态卡、指标、事件时间线和四个控制按钮。
+- Task 6：Windows 拉取最新提交，修正并实测 init.ps1 的依赖幂等性，执行 npm ci、63+ 测试、server+web build 和 API/WebSocket smoke。
+- Task 6 完成后更新 feature-list.json 的 windows-verification 证据。
+- Task 7：开始 Playwright E2E 前必须先向用户同步并等待明确确认；当前未安装浏览器、未执行 E2E。
+
+[恢复开发]
+- 本机：git clone git@github.com:Lvjinhong/delta-shadow-runner.git
+- Windows：进入 D:\Work\Work-Project\delta-shadow-runner 后 git pull，再执行 npm ci、npm test、npm run build。
+- 继续时先重读 docs/superpowers/specs/2026-07-14-shadow-runner-design.md 和 docs/superpowers/plans/2026-07-14-shadow-runner-implementation.md。
 
 [安全边界]
 - 仅使用模拟器、离线回放或 mock 数据。
