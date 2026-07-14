@@ -497,8 +497,8 @@ function routeEdgePhase(
   return currentIndex >= 0 && edgeIndex < currentIndex ? "walked" : "planned";
 }
 
-const viewBoxMinimum = 8;
-const viewBoxMaximum = 92;
+const viewBoxMinimum = 12;
+const viewBoxMaximum = 88;
 const viewBoxCenter = (viewBoxMinimum + viewBoxMaximum) / 2;
 
 function projectAxis(value: number, minimum: number, maximum: number): number {
@@ -548,7 +548,7 @@ export function projectRouteMap(data: TelemetryData): RouteMapProjection {
     isOnRoute: snapshot.route.includes(node.id),
   }));
   const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
-  const edges = scenario.map.nodes.flatMap((sourceNode) =>
+  const edges = scenario.map.nodes.flatMap((sourceNode, sourceNodeIndex) =>
     sourceNode.edges.map((edge, edgeIndex): ProjectedEdge => {
       const projectedSourceNode = nodeById.get(sourceNode.id);
       const targetNode = nodeById.get(edge.targetNodeId);
@@ -558,7 +558,7 @@ export function projectRouteMap(data: TelemetryData): RouteMapProjection {
         );
       }
       return {
-        id: `${sourceNode.id}->${edge.targetNodeId}:${edgeIndex}`,
+        id: `edge:${sourceNodeIndex}:${edgeIndex}`,
         sourceNodeId: sourceNode.id,
         targetNodeId: edge.targetNodeId,
         x1: projectedSourceNode.x,

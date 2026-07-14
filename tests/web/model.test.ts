@@ -220,7 +220,7 @@ describe("dashboard view model", () => {
         x1: 12,
         y1: 88,
         x2: 48.19047619047619,
-        y2: 42.4,
+        y2: expect.any(Number),
         cost: 1,
         phase: "walked",
       },
@@ -229,13 +229,15 @@ describe("dashboard view model", () => {
         sourceNodeId: "relay",
         targetNodeId: "extract",
         x1: 48.19047619047619,
-        y1: 42.4,
+        y1: expect.any(Number),
         x2: 88,
         y2: 12,
         cost: 1,
         phase: "planned",
       },
     ]);
+    expect(projection.edges[0]?.y2).toBeCloseTo(42.4);
+    expect(projection.edges[1]?.y1).toBeCloseTo(42.4);
     expect(projection.nodes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "spawn-a", isSpawn: true, isOnRoute: true }),

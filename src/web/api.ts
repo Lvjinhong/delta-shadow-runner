@@ -50,6 +50,8 @@ export interface TelemetryClientEnvironment extends DashboardFetchEnvironment {
 }
 
 const retryDelaysMs = [500, 1_000, 2_000, 4_000, 8_000] as const;
+const protocolHandshakeTimeoutMs = 5_000;
+const protocolErrorCloseCode = 1002;
 
 function errorFromUnknown(error: unknown, fallback: string): Error {
   return error instanceof Error ? error : new Error(fallback);
@@ -143,6 +145,7 @@ export function createTelemetryClient(
 ): TelemetryClient {
   let socket: TelemetrySocket | undefined;
   let retryTimer: unknown = undefined;
+  let handshakeTimer: unknown = undefined;
   let retryIndex = 0;
   let disposed = false;
 
@@ -150,6 +153,13 @@ export function createTelemetryClient(
     if (retryTimer !== undefined) {
       environment.clearTimeout(retryTimer);
       retryTimer = undefined;
+    }
+  };
+
+  const clearHandshake = (): void => {
+    if (handshakeTimer !== undefined) {
+      environment.clearTimeout(handshakeTimer);
+      handshakeTimer = undefined;
     }
   };
 
@@ -205,19 +215,49 @@ export function createTelemetryClient(
     }
     socket = nextSocket;
     let protocolReady = false;
+    let protocolFailed = false;
+
+    const failProtocol = (error: Error): void => {
+      if (disposed || socket !== nextSocket || protocolFailed) {
+        return;
+      }
+      protocolFailed = true;
+      clearHandshake();
+      callbacks.onError(error);
+      if (nextSocket.readyState < 2) {
+        nextSocket.close(protocolErrorCloseCode, "telemetry protocol error");
+      }
+    };
+
+    nextSocket.addEventListener("open", () => {
+      if (
+        disposed ||
+        socket !== nextSocket ||
+        protocolReady ||
+        protocolFailed
+      ) {
+        return;
+      }
+      clearHandshake();
+      handshakeTimer = environment.setTimeout(() => {
+        handshakeTimer = undefined;
+        failProtocol(new Error("遥测协议握手超时，连接将在重试后恢复"));
+      }, protocolHandshakeTimeoutMs);
+    });
 
     nextSocket.addEventListener("message", (event) => {
-      if (disposed || socket !== nextSocket) {
+      if (disposed || socket !== nextSocket || protocolFailed) {
         return;
       }
       if (typeof event.data !== "string") {
-        callbacks.onError(new Error("收到非文本遥测消息，已忽略"));
+        failProtocol(new Error("收到非文本遥测协议消息，连接将在重试后恢复"));
         return;
       }
       try {
         const message = parseTelemetryMessage(event.data);
         if (!protocolReady) {
           protocolReady = true;
+          clearHandshake();
           retryIndex = 0;
           callbacks.onStatus({ phase: "connected", attempt: 1 });
         }
@@ -225,7 +265,7 @@ export function createTelemetryClient(
           callbacks.onData(message.data);
         }
       } catch (error) {
-        callbacks.onError(errorFromUnknown(error, "遥测消息解析失败"));
+        failProtocol(errorFromUnknown(error, "遥测消息解析失败"));
       }
     });
 
@@ -237,6 +277,7 @@ export function createTelemetryClient(
 
     nextSocket.addEventListener("close", () => {
       if (socket === nextSocket) {
+        clearHandshake();
         socket = undefined;
       }
       scheduleReconnect();
@@ -256,6 +297,7 @@ export function createTelemetryClient(
       }
       disposed = true;
       clearRetry();
+      clearHandshake();
       const activeSocket = socket;
       socket = undefined;
       if (activeSocket && activeSocket.readyState < 2) {
