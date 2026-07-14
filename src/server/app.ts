@@ -4,7 +4,6 @@ import cors from "cors";
 import express, {
   type ErrorRequestHandler,
   type Express,
-  type Request,
   type Response,
 } from "express";
 import { WebSocket, WebSocketServer } from "ws";
@@ -156,8 +155,14 @@ export function createRunnerApp(
     res.json(success({ snapshot }));
   });
 
-  app.post(/^\/api\/control\/.+/, (_req, res) => {
+  app.all(/^\/api\/control(?:\/.*)?$/, (_req, res) => {
     sendInvalidControl(res);
+  });
+
+  app.all(/^\/api(?:\/.*)?$/, (_req, res) => {
+    res
+      .status(404)
+      .json(failure("API_NOT_FOUND", "请求的 API 路径不存在"));
   });
 
   if (options.staticDir) {
@@ -165,14 +170,33 @@ export function createRunnerApp(
   }
 
   const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+    const bodyError = error as { readonly status?: unknown; readonly type?: unknown };
+    if (bodyError.status === 413 || bodyError.type === "entity.too.large") {
+      res
+        .status(413)
+        .json(failure("PAYLOAD_TOO_LARGE", "请求体超过 16KB 限制"));
+      return;
+    }
+
     if (
       error instanceof SyntaxError &&
-      "status" in error &&
-      error.status === 400
+      bodyError.status === 400 &&
+      bodyError.type === "entity.parse.failed"
     ) {
       res
         .status(400)
         .json(failure("INVALID_JSON", "请求体不是有效的 JSON"));
+      return;
+    }
+
+    if (
+      typeof bodyError.status === "number" &&
+      bodyError.status >= 400 &&
+      bodyError.status < 500
+    ) {
+      res
+        .status(bodyError.status)
+        .json(failure("INVALID_REQUEST", "请求无法被服务端接受"));
       return;
     }
 
