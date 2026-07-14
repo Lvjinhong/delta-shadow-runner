@@ -202,3 +202,22 @@
 
 .legend-dot--current { color: var(--cyan); background: var(--cyan); }
 .legend-dot--extract { color: var(--cyan); border-radius: 50%; }
+
+/* 地图样式后加载，响应式覆盖也必须留在本文件末尾。 */
+@media (max-width: 720px) {
+  .map-stage,
+  .route-map {
+    min-height: 340px;
+  }
+}
+
+@media (max-width: 430px) {
+  .map-stage,
+  .route-map {
+    min-height: 290px;
+  }
+
+  .map-coordinates {
+    display: none;
+  }
+}

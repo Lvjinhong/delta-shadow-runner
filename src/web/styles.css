@@ -720,11 +720,6 @@ button:disabled {
     grid-column: 1;
   }
 
-  .map-stage,
-  .route-map {
-    min-height: 340px;
-  }
-
   .map-heading,
   .event-heading {
     align-items: flex-start;
@@ -772,14 +767,6 @@ button:disabled {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .map-stage,
-  .route-map {
-    min-height: 290px;
-  }
-
-  .map-coordinates {
-    display: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
