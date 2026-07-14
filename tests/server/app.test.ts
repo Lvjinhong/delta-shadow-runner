@@ -237,6 +237,41 @@ describe("Runner REST API", () => {
       error: { code: "INVALID_JSON" },
     });
   });
+
+  it.each([
+    ["get", "/api/unknown", 404, "API_NOT_FOUND"],
+    ["post", "/api/control", 400, "INVALID_CONTROL_REQUEST"],
+  ] as const)(
+    "未命中的 API 也返回 JSON envelope: %s %s",
+    async (method, path, status, code) => {
+      const runtime = new RunnerRuntime();
+      const client = request(createRunnerApp(runtime));
+      const response =
+        method === "get" ? await client.get(path) : await client.post(path).send({});
+
+      expect(response.status).toBe(status);
+      expect(response.headers["content-type"]).toContain("application/json");
+      expect(response.body).toMatchObject({
+        success: false,
+        data: null,
+        error: { code },
+      });
+    },
+  );
+
+  it("将超限 JSON 转成统一 413 响应", async () => {
+    const runtime = new RunnerRuntime();
+    const response = await request(createRunnerApp(runtime))
+      .post("/api/control/start")
+      .send({ padding: "x".repeat(17 * 1_024) });
+
+    expect(response.status).toBe(413);
+    expect(response.body).toMatchObject({
+      success: false,
+      data: null,
+      error: { code: "PAYLOAD_TOO_LARGE" },
+    });
+  });
 });
 
 describe("Runner WebSocket", () => {
