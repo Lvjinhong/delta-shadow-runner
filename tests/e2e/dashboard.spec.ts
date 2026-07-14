@@ -231,6 +231,9 @@ for (const viewport of viewports) {
     await page.goto("/");
     await expectDashboardReady(page);
     await expectNoHorizontalOverflow(page);
+    expect(
+      await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches),
+    ).toBe(true);
 
     const gridColumns = await page.locator(".dashboard-grid").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length,

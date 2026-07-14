@@ -25,7 +25,11 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // 项目级 device 配置必须显式保留该媒体偏好，避免被设备描述覆盖。
+        reducedMotion: "reduce",
+      },
     },
   ],
   webServer: {
