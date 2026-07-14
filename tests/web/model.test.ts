@@ -214,24 +214,24 @@ describe("dashboard view model", () => {
 
     expect(projection.edges).toEqual([
       {
-        id: "spawn-a->relay",
+        id: "spawn-a->relay:0",
         sourceNodeId: "spawn-a",
         targetNodeId: "relay",
         x1: 8,
-        y1: 72,
+        y1: 92,
         x2: 48,
-        y2: 54,
+        y2: 41.6,
         cost: 1,
         phase: "walked",
       },
       {
-        id: "relay->extract",
+        id: "relay->extract:0",
         sourceNodeId: "relay",
         targetNodeId: "extract",
         x1: 48,
-        y1: 54,
+        y1: 41.6,
         x2: 92,
-        y2: 42,
+        y2: 8,
         cost: 1,
         phase: "planned",
       },
@@ -243,5 +243,118 @@ describe("dashboard view model", () => {
         expect.objectContaining({ id: "extract", isTarget: true, isExtract: true }),
       ]),
     );
+  });
+
+  it("接受任意有限坐标与零代价边，并归一化到安全 viewBox", () => {
+    const arbitraryTelemetry = {
+      ...telemetryData,
+      snapshot: {
+        ...telemetryData.snapshot,
+        currentNodeId: "middle",
+        targetNodeId: "right",
+        route: ["left", "middle", "right"],
+        action: { type: "move", targetNodeId: "right", ttlMs: 750 },
+      },
+      scenario: {
+        ...telemetryData.scenario,
+        spawnNodeIds: ["left"],
+        defaultSpawnNodeId: "left",
+        extractNodeId: "right",
+        map: {
+          nodes: [
+            {
+              id: "left",
+              x: -Number.MAX_VALUE,
+              y: -42,
+              edges: [
+                { targetNodeId: "middle", cost: 0 },
+                { targetNodeId: "middle", cost: 3 },
+              ],
+            },
+            {
+              id: "middle",
+              x: 0,
+              y: -42,
+              edges: [{ targetNodeId: "right", cost: 0 }],
+            },
+            { id: "right", x: Number.MAX_VALUE, y: -42, edges: [] },
+          ],
+        },
+      },
+    } as const;
+
+    const parsed = parseSnapshotEnvelope({
+      success: true,
+      data: arbitraryTelemetry,
+      error: null,
+    });
+    const projection = projectRouteMap(parsed);
+
+    expect(projection.nodes.map(({ x, y }) => ({ x, y }))).toEqual([
+      { x: 8, y: 50 },
+      { x: 50, y: 50 },
+      { x: 92, y: 50 },
+    ]);
+    expect(projection.edges.map((edge) => edge.id)).toEqual([
+      "left->middle:0",
+      "left->middle:1",
+      "middle->right:0",
+    ]);
+    expect(projection.edges.map((edge) => edge.phase)).toEqual([
+      "walked",
+      "walked",
+      "planned",
+    ]);
+    expect(
+      projection.nodes.every(
+        (node) =>
+          node.x >= 8 && node.x <= 92 && node.y >= 8 && node.y <= 92,
+      ),
+    ).toBe(true);
+  });
+
+  it("坐标仍须有限且边代价不能为负数", () => {
+    const invalidCoordinate = {
+      ...telemetryData,
+      scenario: {
+        ...telemetryData.scenario,
+        map: {
+          nodes: telemetryData.scenario.map.nodes.map((node, index) =>
+            index === 0 ? { ...node, x: Number.POSITIVE_INFINITY } : node,
+          ),
+        },
+      },
+    };
+    const invalidCost = {
+      ...telemetryData,
+      scenario: {
+        ...telemetryData.scenario,
+        map: {
+          nodes: telemetryData.scenario.map.nodes.map((node, index) =>
+            index === 0
+              ? {
+                  ...node,
+                  edges: [{ targetNodeId: "relay", cost: -1 }],
+                }
+              : node,
+          ),
+        },
+      },
+    };
+
+    expect(() =>
+      parseSnapshotEnvelope({
+        success: true,
+        data: invalidCoordinate,
+        error: null,
+      }),
+    ).toThrow(/有限数/);
+    expect(() =>
+      parseSnapshotEnvelope({
+        success: true,
+        data: invalidCost,
+        error: null,
+      }),
+    ).toThrow(/cost/);
   });
 });
