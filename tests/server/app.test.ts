@@ -389,4 +389,74 @@ describe("Runner WebSocket", () => {
     runtime.control("reset");
     expect(runtime.subscriberCount).toBe(0);
   });
+
+  it("客户端 WebSocket error 被连接级监听器消费，不影响 HTTP 服务", async () => {
+    const runtime = new RunnerRuntime();
+    const service = createRunnerServer(runtime);
+    await service.listen(0, "127.0.0.1");
+    closeTasks.push(() => service.close());
+
+    const address = service.server.address() as AddressInfo;
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws`);
+    closeTasks.push(async () => {
+      socket.close();
+      await waitForClose(socket);
+    });
+    await waitForOpen(socket);
+
+    const serverSocket = [...service.webSocketServer.clients][0];
+    expect(serverSocket).toBeDefined();
+    expect(() =>
+      serverSocket?.emit("error", new Error("模拟无效协议帧")),
+    ).not.toThrow();
+
+    const health = await request(service.server).get("/api/health");
+    expect(health.status).toBe(200);
+  });
+
+  it("并发 close 的每个调用都等待同一轮完整清理", async () => {
+    const runtime = new RunnerRuntime();
+    const service = createRunnerServer(runtime);
+    await service.listen(0, "127.0.0.1");
+    runtime.start();
+
+    const firstClose = service.close();
+    const secondClose = service.close();
+    await secondClose;
+
+    expect(service.server.listening).toBe(false);
+    expect(runtime.isRunning).toBe(false);
+    expect(runtime.subscriberCount).toBe(0);
+    await firstClose;
+  });
+
+  it("close 后拒绝重新 listen，避免产生无法通过公开 API 清理的句柄", async () => {
+    const runtime = new RunnerRuntime();
+    const service = createRunnerServer(runtime);
+    await service.listen(0, "127.0.0.1");
+    await service.close();
+
+    let listenError: unknown;
+    try {
+      await service.listen(0, "127.0.0.1");
+    } catch (error) {
+      listenError = error;
+    } finally {
+      // RED 实现可能错误地重新监听；测试自身必须回收该句柄。
+      if (service.server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          service.server.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+      }
+    }
+
+    expect(listenError).toBeInstanceOf(Error);
+    expect((listenError as Error).message).toContain("已关闭");
+  });
 });
