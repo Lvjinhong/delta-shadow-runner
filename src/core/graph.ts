@@ -70,7 +70,12 @@ function calculateHeuristicScale(graph: RouteGraph): number {
       }
 
       const edgeDistance = distance(source, target);
-      if (!Number.isFinite(edgeDistance) || edgeDistance === 0) {
+      // 任一有效边的几何距离溢出后，剩余边无法再给出全图安全下界。
+      if (!Number.isFinite(edgeDistance)) {
+        return 0;
+      }
+
+      if (edgeDistance === 0) {
         continue;
       }
 
