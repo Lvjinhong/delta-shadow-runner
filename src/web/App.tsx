@@ -76,7 +76,7 @@ function MapNode({ node }: { readonly node: ProjectedNode }): React.JSX.Element 
   ]
     .filter(Boolean)
     .join(" ");
-  const labelY = node.y > 82 ? -5 : 7;
+  const labelTop = node.y > 82 ? -12 : 4;
 
   return (
     <g className={classes} transform={`translate(${node.x} ${node.y})`}>
@@ -85,9 +85,17 @@ function MapNode({ node }: { readonly node: ProjectedNode }): React.JSX.Element 
       <circle className="node-core" r={node.isCurrent ? 2.3 : 1.8} />
       {node.isSpawn ? <path className="spawn-mark" d="M -3 2.8 L 0 -3 L 3 2.8 Z" /> : null}
       {node.isTarget ? <path className="target-cross" d="M -4 0 H 4 M 0 -4 V 4" /> : null}
-      <text className="node-label" x="0" y={labelY} textAnchor="middle">
-        {nodeLabel(node.id)}
-      </text>
+      <foreignObject
+        className="node-label-frame"
+        x="-11"
+        y={labelTop}
+        width="22"
+        height="12"
+      >
+        <div className="node-label" title={node.id}>
+          {nodeLabel(node.id)}
+        </div>
+      </foreignObject>
     </g>
   );
 }
@@ -313,6 +321,7 @@ export function App(): React.JSX.Element {
   const statusMeta = snapshot ? statusPresentation(snapshot.status) : null;
   const controlsDisabled = loading || !snapshot || pendingCommand !== null;
   const visibleEvents = snapshot ? [...snapshot.events].slice(-12).reverse() : [];
+  const latestEvent = snapshot?.events.at(-1);
   const displayedError = controlError || connectionError;
 
   return (
@@ -364,7 +373,7 @@ export function App(): React.JSX.Element {
               <div className="panel-body">
                 <div className="mission-id">
                   <span>RUN IDENT</span>
-                  <strong>{snapshot.runId}</strong>
+                  <strong title={snapshot.runId}>{snapshot.runId}</strong>
                 </div>
                 <div className="confidence-block">
                   <div><span>定位置信度</span><strong>{percent(snapshot.confidence)}</strong></div>
@@ -453,9 +462,17 @@ export function App(): React.JSX.Element {
               <div><span className="eyebrow">EVENT BUFFER / LAST 12</span><h2 id="event-title">运行事件</h2></div>
               <span>{snapshot.events.length.toString().padStart(2, "0")} RECORDS</span>
             </div>
-            <ol className="event-list" aria-live="polite">
-              {visibleEvents.map((event, index) => (
-                <li key={`${event.tick}-${event.kind}-${index}`} className={`event event--${event.kind}`}>
+            <div className="sr-only event-announcer" role="status" aria-live="polite" aria-atomic="true">
+              {latestEvent
+                ? `最新事件，T+${latestEvent.tick}，${latestEvent.message}`
+                : "暂无运行事件"}
+            </div>
+            <ol className="event-list">
+              {visibleEvents.map((event) => (
+                <li
+                  key={`${snapshot.runId}:${event.tick}:${event.kind}:${event.message}`}
+                  className={`event event--${event.kind}`}
+                >
                   <time>T+{event.tick.toString().padStart(3, "0")}</time>
                   <i aria-hidden="true" />
                   <span>{event.message}</span>

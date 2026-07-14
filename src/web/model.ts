@@ -292,8 +292,8 @@ function validateScenario(value: unknown): ScenarioTelemetry {
 
     return {
       id,
-      x: requireFiniteNumber(node.x, `地图节点 "${id}".x`, 0, 100),
-      y: requireFiniteNumber(node.y, `地图节点 "${id}".y`, 0, 100),
+      x: requireFiniteNumber(node.x, `地图节点 "${id}".x`),
+      y: requireFiniteNumber(node.y, `地图节点 "${id}".y`),
       edges: node.edges.map((edgeValue, edgeIndex) => {
         const edge = requireRecord(
           edgeValue,
@@ -307,7 +307,7 @@ function validateScenario(value: unknown): ScenarioTelemetry {
           cost: requireFiniteNumber(
             edge.cost,
             `地图节点 "${id}".edges[${edgeIndex}].cost`,
-            Number.EPSILON,
+            0,
           ),
         };
       }),
@@ -497,35 +497,72 @@ function routeEdgePhase(
   return currentIndex >= 0 && edgeIndex < currentIndex ? "walked" : "planned";
 }
 
+const viewBoxMinimum = 8;
+const viewBoxMaximum = 92;
+const viewBoxCenter = (viewBoxMinimum + viewBoxMaximum) / 2;
+
+function projectAxis(value: number, minimum: number, maximum: number): number {
+  if (minimum === maximum) {
+    return viewBoxCenter;
+  }
+
+  const range = maximum - minimum;
+  const ratio = Number.isFinite(range)
+    ? (value - minimum) / range
+    : (value / 2 - minimum / 2) / (maximum / 2 - minimum / 2);
+  const boundedRatio = Math.min(1, Math.max(0, ratio));
+  return viewBoxMinimum + boundedRatio * (viewBoxMaximum - viewBoxMinimum);
+}
+
+function coordinateBounds(nodes: readonly ScenarioNodeTelemetry[]): {
+  readonly minimumX: number;
+  readonly maximumX: number;
+  readonly minimumY: number;
+  readonly maximumY: number;
+} {
+  let minimumX = Number.POSITIVE_INFINITY;
+  let maximumX = Number.NEGATIVE_INFINITY;
+  let minimumY = Number.POSITIVE_INFINITY;
+  let maximumY = Number.NEGATIVE_INFINITY;
+
+  for (const node of nodes) {
+    minimumX = Math.min(minimumX, node.x);
+    maximumX = Math.max(maximumX, node.x);
+    minimumY = Math.min(minimumY, node.y);
+    maximumY = Math.max(maximumY, node.y);
+  }
+  return { minimumX, maximumX, minimumY, maximumY };
+}
+
 export function projectRouteMap(data: TelemetryData): RouteMapProjection {
   const { scenario, snapshot } = data;
-  const nodeById = new Map(
-    scenario.map.nodes.map((node) => [node.id, node] as const),
-  );
+  const bounds = coordinateBounds(scenario.map.nodes);
   const nodes = scenario.map.nodes.map((node): ProjectedNode => ({
     id: node.id,
-    x: node.x,
-    y: node.y,
+    x: projectAxis(node.x, bounds.minimumX, bounds.maximumX),
+    y: projectAxis(node.y, bounds.minimumY, bounds.maximumY),
     isSpawn: scenario.spawnNodeIds.includes(node.id),
     isExtract: scenario.extractNodeId === node.id,
     isCurrent: snapshot.currentNodeId === node.id,
     isTarget: snapshot.targetNodeId === node.id,
     isOnRoute: snapshot.route.includes(node.id),
   }));
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
   const edges = scenario.map.nodes.flatMap((sourceNode) =>
-    sourceNode.edges.map((edge): ProjectedEdge => {
+    sourceNode.edges.map((edge, edgeIndex): ProjectedEdge => {
+      const projectedSourceNode = nodeById.get(sourceNode.id);
       const targetNode = nodeById.get(edge.targetNodeId);
-      if (!targetNode) {
+      if (!projectedSourceNode || !targetNode) {
         throw new DashboardProtocolError(
           `地图边 ${sourceNode.id} -> ${edge.targetNodeId} 指向未知节点`,
         );
       }
       return {
-        id: `${sourceNode.id}->${edge.targetNodeId}`,
+        id: `${sourceNode.id}->${edge.targetNodeId}:${edgeIndex}`,
         sourceNodeId: sourceNode.id,
         targetNodeId: edge.targetNodeId,
-        x1: sourceNode.x,
-        y1: sourceNode.y,
+        x1: projectedSourceNode.x,
+        y1: projectedSourceNode.y,
         x2: targetNode.x,
         y2: targetNode.y,
         cost: edge.cost,

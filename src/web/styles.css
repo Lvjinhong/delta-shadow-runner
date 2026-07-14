@@ -13,7 +13,7 @@
   --line-strong: #485153;
   --ink: #d8dedc;
   --ink-soft: #96a09f;
-  --ink-dim: #626b6b;
+  --ink-dim: #788281;
   --amber: #e0a128;
   --amber-hot: #ffc04a;
   --cyan: #4bc9bc;
@@ -37,7 +37,6 @@ body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
-  overflow-x: hidden;
   background:
     linear-gradient(rgba(75, 201, 188, 0.025) 1px, transparent 1px),
     linear-gradient(90deg, rgba(75, 201, 188, 0.02) 1px, transparent 1px),
@@ -212,6 +211,11 @@ button:disabled {
   font-size: 0.82rem;
 }
 
+.error-banner span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .error-banner b {
   margin-right: 10px;
   color: var(--red);
@@ -220,6 +224,11 @@ button:disabled {
 }
 
 .error-banner button {
+  display: grid;
+  min-width: 44px;
+  min-height: 44px;
+  flex: 0 0 44px;
+  place-items: center;
   border: 0;
   background: transparent;
   color: var(--ink-soft);
@@ -279,7 +288,7 @@ button:disabled {
   position: relative;
   display: flex;
   align-items: center;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 34px 0 12px;
   border-bottom: 1px solid var(--line);
   color: var(--ink);
@@ -418,9 +427,11 @@ button:disabled {
 }
 
 .decision-readout > strong {
+  min-width: 0;
   color: var(--ink);
   font: 650 1rem/1.35 "Bahnschrift Condensed", Aptos, sans-serif;
   letter-spacing: 0.03em;
+  overflow-wrap: anywhere;
 }
 
 .decision-readout dl {
@@ -456,7 +467,7 @@ button:disabled {
 .control-button {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr);
-  min-height: 42px;
+  min-height: 44px;
   align-items: center;
   padding: 0 10px 0 0;
   border: 1px solid var(--line-strong);
@@ -578,6 +589,11 @@ button:disabled {
   font-size: 0.72rem;
 }
 
+.event span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .event time,
 .event b {
   color: var(--ink-dim);
@@ -625,9 +641,20 @@ button:disabled {
   justify-content: space-between;
   gap: 20px;
   padding: 11px 2px 0;
-  color: #515959;
+  color: var(--ink-dim);
   font: 650 0.57rem/1 "Bahnschrift Condensed", Aptos, sans-serif;
   letter-spacing: 0.11em;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @keyframes position-pulse {
