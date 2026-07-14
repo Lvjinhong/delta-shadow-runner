@@ -214,24 +214,24 @@ describe("dashboard view model", () => {
 
     expect(projection.edges).toEqual([
       {
-        id: "spawn-a->relay:0",
+        id: "edge:0:0",
         sourceNodeId: "spawn-a",
         targetNodeId: "relay",
-        x1: 8,
-        y1: 92,
-        x2: 48,
-        y2: 41.6,
+        x1: 12,
+        y1: 88,
+        x2: 48.19047619047619,
+        y2: 42.4,
         cost: 1,
         phase: "walked",
       },
       {
-        id: "relay->extract:0",
+        id: "edge:1:0",
         sourceNodeId: "relay",
         targetNodeId: "extract",
-        x1: 48,
-        y1: 41.6,
-        x2: 92,
-        y2: 8,
+        x1: 48.19047619047619,
+        y1: 42.4,
+        x2: 88,
+        y2: 12,
         cost: 1,
         phase: "planned",
       },
@@ -291,14 +291,14 @@ describe("dashboard view model", () => {
     const projection = projectRouteMap(parsed);
 
     expect(projection.nodes.map(({ x, y }) => ({ x, y }))).toEqual([
-      { x: 8, y: 50 },
+      { x: 12, y: 50 },
       { x: 50, y: 50 },
-      { x: 92, y: 50 },
+      { x: 88, y: 50 },
     ]);
     expect(projection.edges.map((edge) => edge.id)).toEqual([
-      "left->middle:0",
-      "left->middle:1",
-      "middle->right:0",
+      "edge:0:0",
+      "edge:0:1",
+      "edge:1:0",
     ]);
     expect(projection.edges.map((edge) => edge.phase)).toEqual([
       "walked",
@@ -308,9 +308,61 @@ describe("dashboard view model", () => {
     expect(
       projection.nodes.every(
         (node) =>
-          node.x >= 8 && node.x <= 92 && node.y >= 8 && node.y <= 92,
+          node.x >= 12 && node.x <= 88 && node.y >= 12 && node.y <= 88,
       ),
     ).toBe(true);
+    expect(
+      projection.nodes.every(
+        (node) => node.x - 11 >= 0 && node.x + 11 <= 100,
+      ),
+    ).toBe(true);
+  });
+
+  it("边 ID 仅由源节点下标与边下标组成，节点 ID 含分隔符时仍无碰撞", () => {
+    const separatorTelemetry = {
+      ...telemetryData,
+      snapshot: {
+        ...telemetryData.snapshot,
+        currentNodeId: "a",
+        targetNodeId: "c",
+        route: ["a", "b->c"],
+        action: { type: "move", targetNodeId: "b->c", ttlMs: 750 },
+      },
+      scenario: {
+        ...telemetryData.scenario,
+        spawnNodeIds: ["a"],
+        defaultSpawnNodeId: "a",
+        extractNodeId: "c",
+        map: {
+          nodes: [
+            {
+              id: "a",
+              x: 0,
+              y: 0,
+              edges: [{ targetNodeId: "b->c", cost: 1 }],
+            },
+            {
+              id: "a->b",
+              x: 1,
+              y: 1,
+              edges: [{ targetNodeId: "c", cost: 1 }],
+            },
+            { id: "b->c", x: 2, y: 2, edges: [] },
+            { id: "c", x: 3, y: 3, edges: [] },
+          ],
+        },
+      },
+    } as const;
+
+    const parsed = parseSnapshotEnvelope({
+      success: true,
+      data: separatorTelemetry,
+      error: null,
+    });
+    const edgeIds = projectRouteMap(parsed).edges.map((edge) => edge.id);
+
+    expect(edgeIds).toEqual(["edge:0:0", "edge:1:0"]);
+    expect(new Set(edgeIds).size).toBe(edgeIds.length);
   });
 
   it("坐标仍须有限且边代价不能为负数", () => {

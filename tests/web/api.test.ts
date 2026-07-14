@@ -62,6 +62,7 @@ type SocketEvent = "open" | "message" | "error" | "close";
 class FakeSocket {
   readyState = 0;
   closeCalls = 0;
+  readonly closeArguments: Array<{ code?: number; reason?: string }> = [];
   readonly listeners = new Map<SocketEvent, Array<(event: { data?: unknown }) => void>>();
 
   addEventListener(
@@ -73,8 +74,9 @@ class FakeSocket {
     this.listeners.set(type, listeners);
   }
 
-  close(): void {
+  close(code?: number, reason?: string): void {
     this.closeCalls += 1;
+    this.closeArguments.push({ code, reason });
     this.readyState = 3;
   }
 
@@ -207,6 +209,81 @@ describe("dashboard control client", () => {
 });
 
 describe("dashboard telemetry client lifecycle", () => {
+  it("socket open 后 5 秒未收到协议消息则报错、主动关闭并继续重连", () => {
+    const harness = clientHarness();
+    harness.client.connect();
+    const socket = harness.sockets[0];
+    socket?.emit("open");
+
+    expect(harness.scheduler.delays).toEqual([5_000]);
+    harness.scheduler.runNext();
+
+    expect(harness.errors.at(-1)).toContain("握手超时");
+    expect(socket?.closeArguments.at(-1)?.code).toBe(1002);
+    socket?.emit("close");
+    expect(harness.statuses.at(-1)).toBe("reconnecting");
+    expect(harness.scheduler.delays).toEqual([5_000, 500]);
+  });
+
+  it("非法协议消息会清理握手 timer、主动关闭并进入重连", () => {
+    const harness = clientHarness();
+    harness.client.connect();
+    const socket = harness.sockets[0];
+    socket?.emit("open");
+
+    expect(harness.scheduler.callbacks.size).toBe(1);
+    socket?.emit("message", "not-json");
+
+    expect(harness.errors.at(-1)).toMatch(/JSON|消息/);
+    expect(harness.scheduler.callbacks.size).toBe(0);
+    expect(socket?.closeArguments.at(-1)?.code).toBe(1002);
+    socket?.emit("close");
+    expect(harness.statuses.at(-1)).toBe("reconnecting");
+    expect(harness.scheduler.delays).toEqual([5_000, 500]);
+  });
+
+  it.each([
+    [
+      "connection",
+      JSON.stringify({
+        type: "connection",
+        data: { status: "connected", mode: "simulation" },
+      }),
+      [] as number[],
+    ],
+    [
+      "snapshot",
+      JSON.stringify({ type: "snapshot", data: telemetryData }),
+      [0],
+    ],
+  ] as const)("首条合法 %s 消息完成握手并清理 timer", (_type, message, ticks) => {
+    const harness = clientHarness();
+    harness.client.connect();
+    const socket = harness.sockets[0];
+    socket?.emit("open");
+
+    socket?.emit("message", message);
+
+    expect(harness.statuses.at(-1)).toBe("connected");
+    expect(harness.scheduler.callbacks.size).toBe(0);
+    expect(harness.scheduler.cleared).toHaveLength(1);
+    expect(socket?.closeCalls).toBe(0);
+    expect(harness.dataTicks).toEqual(ticks);
+  });
+
+  it("socket 在握手期间关闭时清理握手 timer，再创建重连 timer", () => {
+    const harness = clientHarness();
+    harness.client.connect();
+    const socket = harness.sockets[0];
+    socket?.emit("open");
+
+    socket?.emit("close");
+
+    expect(harness.scheduler.cleared).toHaveLength(1);
+    expect(harness.scheduler.callbacks.size).toBe(1);
+    expect(harness.scheduler.delays).toEqual([5_000, 500]);
+  });
+
   it("按 500/1000/2000/4000/8000ms 重连五次后明确停止", () => {
     const harness = clientHarness();
     harness.client.connect();
@@ -258,6 +335,7 @@ describe("dashboard telemetry client lifecycle", () => {
     harness.client.connect();
     const socket = harness.sockets[0];
     socket?.emit("open");
+    expect(harness.scheduler.callbacks.size).toBe(1);
 
     harness.client.dispose();
     const statusCount = harness.statuses.length;
@@ -267,6 +345,8 @@ describe("dashboard telemetry client lifecycle", () => {
     );
 
     expect(socket?.closeCalls).toBe(1);
+    expect(harness.scheduler.callbacks.size).toBe(0);
+    expect(harness.scheduler.cleared).toHaveLength(1);
     expect(harness.statuses).toHaveLength(statusCount);
     expect(harness.dataTicks).toEqual([]);
   });
