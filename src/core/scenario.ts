@@ -77,6 +77,7 @@ class DeterministicSimulationSource implements SimulationSource {
   private readonly route: readonly string[];
   private routeIndex = 0;
   private stuckPending = false;
+  private capturedAt = 0;
 
   constructor(scenario: RunnerScenario, spawnNodeId: string) {
     this.route = Object.freeze(
@@ -90,16 +91,29 @@ class DeterministicSimulationSource implements SimulationSource {
       throw new Error("确定性模拟源没有可输出的路线节点");
     }
 
+    const capturedAt = this.capturedAt;
+    this.capturedAt += 1;
+
     if (this.stuckPending) {
       this.stuckPending = false;
-      return Object.freeze({ nodeId, confidence: 0.95, stuck: true });
+      return Object.freeze({
+        nodeId,
+        confidence: 0.95,
+        capturedAt,
+        stuck: true,
+      });
     }
 
     if (this.routeIndex < this.route.length - 1) {
       this.routeIndex += 1;
     }
 
-    return Object.freeze({ nodeId, confidence: 0.95, stuck: false });
+    return Object.freeze({
+      nodeId,
+      confidence: 0.95,
+      capturedAt,
+      stuck: false,
+    });
   }
 
   injectStuck(): void {
@@ -109,6 +123,7 @@ class DeterministicSimulationSource implements SimulationSource {
   reset(): void {
     this.routeIndex = 0;
     this.stuckPending = false;
+    this.capturedAt = 0;
   }
 }
 

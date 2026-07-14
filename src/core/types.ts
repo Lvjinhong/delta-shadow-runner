@@ -37,6 +37,7 @@ export type ActionIntent =
 export interface RunnerObservation {
   readonly nodeId: string;
   readonly confidence: number;
+  readonly capturedAt: number;
   readonly stuck?: boolean;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
