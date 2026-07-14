@@ -1,0 +1,43 @@
+{
+  "project": "Shadow Runner Lab",
+  "version": 1,
+  "lastUpdated": "2026-07-14",
+  "features": [
+    {
+      "id": "route-planning",
+      "description": "从模拟出生点计算到撤离点的最低代价路线",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "recovery-engine",
+      "description": "模拟卡住后进入恢复状态并继续原路线",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "telemetry-api",
+      "description": "REST 与 WebSocket 提供快照、控制和遥测",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "control-dashboard",
+      "description": "Web 控制台展示路线、状态、指标和事件",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "windows-verification",
+      "description": "在 Windows 开发机完成安装、测试、构建和 API 冒烟",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "e2e-gate",
+      "description": "用户确认后执行完整浏览器 E2E",
+      "passes": false,
+      "evidence": []
+    }
+  ]
+}

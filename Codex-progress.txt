@@ -1,0 +1,18 @@
+Shadow Runner Lab 进度
+更新时间：2026-07-14
+
+[已完成]
+- 设计说明和实施计划已落盘。
+- Task 1 项目基线已创建：npm 脚本、TypeScript/Vite/Vitest 配置和 Windows 启动脚本。
+
+[待完成]
+- Task 2：A* 路径规划（TDD）。
+- Task 3：模拟场景与恢复引擎（TDD）。
+- Task 4：REST/WebSocket 运行时（TDD）。
+- Task 5：Web 管理端。
+- Task 6：Windows 非 E2E 验证。
+- Task 7：用户确认后的独立 E2E。
+
+[安全边界]
+- 仅使用模拟器、离线回放或 mock 数据。
+- 不读取在线游戏进程，不发送真实键鼠输入，不包含反作弊绕过能力。
