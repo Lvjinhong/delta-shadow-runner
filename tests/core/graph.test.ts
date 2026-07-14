@@ -107,6 +107,45 @@ describe("findShortestPath", () => {
     ]);
   });
 
+  it("边距离溢出时不会用不完整比例高估绕行路线", () => {
+    const overflowHeuristicTrap: RouteGraph = {
+      start: {
+        id: "start",
+        x: Number.MAX_VALUE,
+        y: 0,
+        edges: [
+          { targetNodeId: "target", cost: 100 },
+          { targetNodeId: "bridge", cost: 1 },
+        ],
+      },
+      bridge: {
+        id: "bridge",
+        x: Number.MAX_VALUE,
+        y: 0,
+        edges: [{ targetNodeId: "far", cost: 1 }],
+      },
+      far: {
+        id: "far",
+        x: -Number.MAX_VALUE,
+        y: 0,
+        edges: [{ targetNodeId: "target", cost: 1 }],
+      },
+      target: {
+        id: "target",
+        x: Number.MAX_VALUE / 2,
+        y: 0,
+        edges: [],
+      },
+    };
+
+    expect(findShortestPath(overflowHeuristicTrap, "start", "target")).toEqual([
+      "start",
+      "bridge",
+      "far",
+      "target",
+    ]);
+  });
+
   it.each([
     ["nan-node", Number.NaN, 0],
     ["infinite-node", 0, Number.POSITIVE_INFINITY],
