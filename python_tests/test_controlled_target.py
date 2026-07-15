@@ -1,10 +1,58 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from delta_vision.controlled_target import (
     ControlledTargetModel,
+    ControlledWindowLifetime,
     GroundTruthWriter,
 )
+
+
+class FakeImeSession:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.disable_error: Exception | None = None
+        self.restore_error: Exception | None = None
+
+    def disable(self) -> None:
+        self.events.append("disable_ime")
+        if self.disable_error is not None:
+            raise self.disable_error
+
+    def restore(self) -> None:
+        self.events.append("restore_ime")
+        if self.restore_error is not None:
+            raise self.restore_error
+
+
+class FakeWindow:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.mainloop_error: Exception | None = None
+        self.on_mainloop = None
+        self.report_callback_exception = self._default_report_callback_exception
+
+    def _default_report_callback_exception(
+        self, exception_type, exception, traceback
+    ) -> None:
+        self.events.append("tk_reported_callback_error")
+
+    def mainloop(self) -> None:
+        self.events.append("mainloop")
+        if self.on_mainloop is not None:
+            try:
+                self.on_mainloop()
+            except BaseException as error:
+                self.report_callback_exception(
+                    type(error), error, error.__traceback__
+                )
+        if self.mainloop_error is not None:
+            raise self.mainloop_error
+
+    def destroy(self) -> None:
+        self.events.append("destroy")
 
 
 def test_controlled_target_enables_dpi_awareness_before_importing_tkinter() -> None:
@@ -18,6 +66,94 @@ def test_controlled_target_enables_dpi_awareness_before_importing_tkinter() -> N
     assert source.index("enable_per_monitor_dpi_awareness()") < source.index(
         "import tkinter as tk"
     )
+
+
+def test_controlled_window_lifetime_disables_ime_before_ready_and_mainloop() -> None:
+    events: list[str] = []
+    window = FakeWindow(events)
+    lifetime = ControlledWindowLifetime(window, FakeImeSession(events))
+
+    lifetime.start(lambda: events.append("ready"))
+    lifetime.run()
+
+    assert events == [
+        "disable_ime",
+        "ready",
+        "mainloop",
+        "restore_ime",
+        "destroy",
+    ]
+
+
+def test_controlled_window_lifetime_fails_closed_before_ready() -> None:
+    events: list[str] = []
+    window = FakeWindow(events)
+    ime_session = FakeImeSession(events)
+    ime_session.disable_error = OSError("无法禁用 IME")
+    lifetime = ControlledWindowLifetime(window, ime_session)
+
+    with pytest.raises(OSError, match="无法禁用 IME"):
+        lifetime.start(lambda: events.append("ready"))
+
+    assert events == ["disable_ime", "destroy"]
+
+
+def test_controlled_window_lifetime_restores_before_destroy_on_close() -> None:
+    events: list[str] = []
+    window = FakeWindow(events)
+    lifetime = ControlledWindowLifetime(window, FakeImeSession(events))
+    lifetime.start(lambda: events.append("ready"))
+
+    lifetime.close()
+    lifetime.close()
+
+    assert events == ["disable_ime", "ready", "restore_ime", "destroy"]
+
+
+def test_controlled_window_lifetime_cleans_up_when_mainloop_raises() -> None:
+    events: list[str] = []
+    window = FakeWindow(events)
+    window.mainloop_error = RuntimeError("主循环异常")
+    lifetime = ControlledWindowLifetime(window, FakeImeSession(events))
+    lifetime.start(lambda: events.append("ready"))
+
+    with pytest.raises(RuntimeError, match="主循环异常"):
+        lifetime.run()
+
+    assert events[-2:] == ["restore_ime", "destroy"]
+
+
+def test_controlled_window_lifetime_surfaces_restore_failure_after_destroy() -> None:
+    events: list[str] = []
+    window = FakeWindow(events)
+    ime_session = FakeImeSession(events)
+    ime_session.restore_error = OSError("恢复 IME 失败")
+    lifetime = ControlledWindowLifetime(window, ime_session)
+    lifetime.start(lambda: events.append("ready"))
+
+    with pytest.raises(OSError, match="恢复 IME 失败"):
+        lifetime.run()
+
+    assert events[-2:] == ["restore_ime", "destroy"]
+
+
+def test_controlled_window_lifetime_surfaces_tk_callback_error_after_cleanup() -> None:
+    events: list[str] = []
+    window = FakeWindow(events)
+
+    def fail_in_callback() -> None:
+        events.append("callback")
+        raise OSError("回调写盘失败")
+
+    window.on_mainloop = fail_in_callback
+    lifetime = ControlledWindowLifetime(window, FakeImeSession(events))
+    lifetime.start(lambda: events.append("ready"))
+
+    with pytest.raises(OSError, match="回调写盘失败"):
+        lifetime.run()
+
+    assert "tk_reported_callback_error" not in events
+    assert events[-2:] == ["restore_ime", "destroy"]
 
 
 def test_controlled_target_moves_with_wasd_and_clamps_to_canvas() -> None:

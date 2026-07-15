@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from collections.abc import Iterable
 from ctypes import Structure, Union, c_int32, c_uint16, c_uint32, c_uint64
 from typing import Any, ClassVar
 
@@ -24,6 +25,7 @@ UOI_NAME = 2
 WTS_CURRENT_SESSION = 0xFFFFFFFF
 WTS_CONNECT_STATE = 8
 WTS_ACTIVE = 0
+IACE_DEFAULT = 0x0010
 WTS_CONNECTION_STATE_NAMES = (
     "Active",
     "Connected",
@@ -138,9 +140,81 @@ def _load_wtsapi32() -> Any:
     return wtsapi32
 
 
+def _load_imm32() -> Any:
+    if sys.platform != "win32":
+        raise OSError("Windows IME 管理只能在 Windows 上运行")
+    imm32 = ctypes.WinDLL("imm32", use_last_error=True)
+    imm32.ImmAssociateContextEx.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        DWORD,
+    ]
+    imm32.ImmAssociateContextEx.restype = ctypes.c_int
+    return imm32
+
+
 def _last_error() -> int:
     getter = getattr(ctypes, "get_last_error", None)
     return 0 if getter is None else int(getter())
+
+
+class ImeDisabledSession:
+    """对一组已创建 HWND 临时禁用 IME，并提供可重试的逆序恢复。"""
+
+    def __init__(
+        self,
+        window_handles: Iterable[int],
+        *,
+        imm32: Any | None = None,
+    ) -> None:
+        handles = tuple(dict.fromkeys(window_handles))
+        if not handles:
+            raise ValueError("至少需要一个窗口句柄")
+        if any(type(handle) is not int or handle <= 0 for handle in handles):
+            raise ValueError("窗口句柄必须是正整数")
+        self._window_handles = handles
+        self._imm32 = imm32 or _load_imm32()
+        self._disabled_handles: list[int] = []
+
+    def _associate(self, window_handle: int, *, flags: int) -> bool:
+        return bool(
+            self._imm32.ImmAssociateContextEx(
+                ctypes.c_void_p(window_handle),
+                None,
+                DWORD(flags),
+            )
+        )
+
+    def disable(self) -> None:
+        if self._disabled_handles:
+            return
+        for window_handle in self._window_handles:
+            if self._associate(window_handle, flags=0):
+                self._disabled_handles.append(window_handle)
+                continue
+            try:
+                self.restore()
+            except OSError as rollback_error:
+                raise OSError(
+                    _last_error(),
+                    f"禁用窗口 {window_handle} 的 IME 失败，且回滚未完成",
+                ) from rollback_error
+            raise OSError(
+                _last_error(),
+                f"禁用窗口 {window_handle} 的 IME 失败",
+            )
+
+    def restore(self) -> None:
+        failed_handles: list[int] = []
+        for window_handle in reversed(self._disabled_handles):
+            if not self._associate(window_handle, flags=IACE_DEFAULT):
+                failed_handles.append(window_handle)
+        self._disabled_handles = list(reversed(failed_handles))
+        if failed_handles:
+            raise OSError(
+                _last_error(),
+                f"恢复窗口 {failed_handles[0]} 的 IME 失败",
+            )
 
 
 def enable_per_monitor_dpi_awareness(*, user32: Any | None = None) -> None:

@@ -7,11 +7,13 @@ import json
 import math
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
+from typing import Protocol
 
-from .win32_native import enable_per_monitor_dpi_awareness
+from .win32_native import ImeDisabledSession, enable_per_monitor_dpi_awareness
 
 WINDOW_TITLE = "Delta Vision Test Target"
 CANVAS_WIDTH = 800
@@ -20,6 +22,98 @@ START_POSITION = (80.0, 520.0)
 TURN_POSITION = (80.0, 80.0)
 GOAL_POSITION = (700.0, 80.0)
 GOAL_RADIUS = 20.0
+
+
+class _Window(Protocol):
+    report_callback_exception: Callable[
+        [type[BaseException], BaseException, TracebackType | None], None
+    ]
+
+    def mainloop(self) -> None: ...
+
+    def destroy(self) -> None: ...
+
+
+class _ImeSession(Protocol):
+    def disable(self) -> None: ...
+
+    def restore(self) -> None: ...
+
+
+class ControlledWindowLifetime:
+    """把 IME 隔离与窗口主循环绑定，确保失败时不会发布可用状态。"""
+
+    def __init__(self, window: _Window, ime_session: _ImeSession) -> None:
+        self._window = window
+        self._ime_session = ime_session
+        self._started = False
+        self._closed = False
+        self._cleanup_error: BaseException | None = None
+        self._callback_error: BaseException | None = None
+
+    def _report_callback_exception(
+        self,
+        exception_type: type[BaseException],
+        exception: BaseException,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exception_type
+        if self._callback_error is None:
+            self._callback_error = exception.with_traceback(traceback)
+        self.close()
+
+    def start(self, on_ready: Callable[[], None]) -> None:
+        if self._started or self._closed:
+            raise RuntimeError("受控窗口生命周期不能重复启动")
+        try:
+            # Tkinter 默认只打印回调异常；集中接管后才能恢复 IME 并让进程失败退出。
+            self._window.report_callback_exception = self._report_callback_exception
+            self._ime_session.disable()
+        except BaseException:
+            self._closed = True
+            self._window.destroy()
+            raise
+        self._started = True
+        try:
+            on_ready()
+        except BaseException as error:
+            self.close()
+            if self._cleanup_error is not None:
+                raise error from self._cleanup_error
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            if self._started:
+                self._ime_session.restore()
+        except BaseException as error:
+            self._cleanup_error = self._cleanup_error or error
+        finally:
+            try:
+                self._window.destroy()
+            except BaseException as error:
+                self._cleanup_error = self._cleanup_error or error
+            self._closed = True
+
+    def run(self) -> None:
+        if not self._started or self._closed:
+            raise RuntimeError("受控窗口必须成功启动后才能进入主循环")
+        mainloop_error: BaseException | None = None
+        try:
+            self._window.mainloop()
+        except BaseException as error:
+            mainloop_error = error
+        finally:
+            self.close()
+        primary_error = mainloop_error or self._callback_error
+        if primary_error is not None:
+            if self._cleanup_error is not None:
+                raise primary_error from self._cleanup_error
+            raise primary_error
+        if self._cleanup_error is not None:
+            raise self._cleanup_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +252,11 @@ def run_window(*, artifacts: Path, ignore_input_ms: int, run_id: str) -> int:
         highlightthickness=0,
     )
     canvas.pack(fill="both", expand=True)
+    window.update_idletasks()
+    lifetime = ControlledWindowLifetime(
+        window,
+        ImeDisabledSession((int(window.winfo_id()), int(canvas.winfo_id()))),
+    )
     canvas.create_line(
         START_POSITION[0],
         START_POSITION[1],
@@ -188,11 +287,17 @@ def run_window(*, artifacts: Path, ignore_input_ms: int, run_id: str) -> int:
     started_at_ns = time.monotonic_ns()
     previous_tick_ns = started_at_ns
     last_logged_state = model.state
-    writer.write(
-        "start",
-        at_ns=started_at_ns,
-        payload={"x": model.state.x, "y": model.state.y, "ignore_input_ms": ignore_input_ms},
-    )
+
+    def publish_start() -> None:
+        writer.write(
+            "start",
+            at_ns=started_at_ns,
+            payload={
+                "x": model.state.x,
+                "y": model.state.y,
+                "ignore_input_ms": ignore_input_ms,
+            },
+        )
 
     def log_key(event_name: str, key: str) -> None:
         writer.write(event_name, at_ns=time.monotonic_ns(), payload={"key": key})
@@ -237,20 +342,27 @@ def run_window(*, artifacts: Path, ignore_input_ms: int, run_id: str) -> int:
         window.after(16, tick)
 
     def close_window() -> None:
-        writer.write(
-            "close",
-            at_ns=time.monotonic_ns(),
-            payload={"arrived": model.state.arrived, "x": model.state.x, "y": model.state.y},
-        )
-        window.destroy()
+        try:
+            writer.write(
+                "close",
+                at_ns=time.monotonic_ns(),
+                payload={
+                    "arrived": model.state.arrived,
+                    "x": model.state.x,
+                    "y": model.state.y,
+                },
+            )
+        finally:
+            lifetime.close()
 
     window.bind("<KeyPress>", on_key_down)
     window.bind("<KeyRelease>", on_key_up)
     window.bind("<FocusOut>", on_focus_out)
     window.protocol("WM_DELETE_WINDOW", close_window)
+    lifetime.start(publish_start)
     window.after(100, window.focus_force)
     window.after(16, tick)
-    window.mainloop()
+    lifetime.run()
     return 0
 
 

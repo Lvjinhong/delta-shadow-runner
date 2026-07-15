@@ -2,13 +2,16 @@ import ctypes
 
 import pytest
 
+from delta_vision import win32_native
 from delta_vision.win32_native import (
+    IACE_DEFAULT,
     INPUT,
     INPUT_KEYBOARD,
     INPUT_MOUSE,
     KEYEVENTF_KEYUP,
     KEYEVENTF_SCANCODE,
     MOUSEEVENTF_MOVE,
+    ImeDisabledSession,
     Win32NativeGateway,
     enable_per_monitor_dpi_awareness,
     find_window_handle,
@@ -118,6 +121,23 @@ class FakeWtsApi32:
         self.freed_buffers.append(int(buffer.value))
 
 
+class FakeImm32:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int, int]] = []
+        self.failures: set[tuple[int, int]] = set()
+
+    @staticmethod
+    def _value(pointer) -> int:
+        return int(getattr(pointer, "value", pointer) or 0)
+
+    def ImmAssociateContextEx(self, window_handle, input_context, flags):
+        handle = self._value(window_handle)
+        context = self._value(input_context)
+        effective_flags = self._value(flags)
+        self.calls.append((handle, context, effective_flags))
+        return int((handle, effective_flags) not in self.failures)
+
+
 def test_gateway_reads_foreground_title_and_emergency_key() -> None:
     user32 = FakeUser32()
     gateway = Win32NativeGateway(user32=user32)
@@ -155,6 +175,92 @@ def test_gateway_sends_relative_mouse_motion() -> None:
     assert event.mi.dx == 12
     assert event.mi.dy == -7
     assert event.mi.dwFlags == MOUSEEVENTF_MOVE
+
+
+def test_ime_disabled_session_uses_public_api_for_each_unique_window() -> None:
+    imm32 = FakeImm32()
+    session = ImeDisabledSession((101, 202, 101), imm32=imm32)
+
+    session.disable()
+
+    assert imm32.calls == [(101, 0, 0), (202, 0, 0)]
+
+
+def test_load_imm32_uses_pointer_safe_associate_context_ex_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeFunction:
+        argtypes = None
+        restype = None
+
+    class FakeImm32Library:
+        ImmAssociateContextEx = FakeFunction()
+
+    library = FakeImm32Library()
+    monkeypatch.setattr(win32_native.sys, "platform", "win32")
+    monkeypatch.setattr(
+        win32_native.ctypes,
+        "WinDLL",
+        lambda name, use_last_error: library,
+        raising=False,
+    )
+
+    assert win32_native._load_imm32() is library
+    assert library.ImmAssociateContextEx.argtypes == [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        win32_native.DWORD,
+    ]
+    assert library.ImmAssociateContextEx.restype is ctypes.c_int
+
+
+def test_ime_disabled_session_rolls_back_when_disable_fails() -> None:
+    imm32 = FakeImm32()
+    imm32.failures.add((202, 0))
+    session = ImeDisabledSession((101, 202, 303), imm32=imm32)
+
+    with pytest.raises(OSError, match=r"禁用.*IME"):
+        session.disable()
+
+    assert imm32.calls == [
+        (101, 0, 0),
+        (202, 0, 0),
+        (101, 0, IACE_DEFAULT),
+    ]
+
+
+def test_ime_disabled_session_restores_in_reverse_order_and_is_idempotent() -> None:
+    imm32 = FakeImm32()
+    session = ImeDisabledSession((101, 202), imm32=imm32)
+    session.disable()
+
+    session.restore()
+    session.restore()
+
+    assert imm32.calls == [
+        (101, 0, 0),
+        (202, 0, 0),
+        (202, 0, IACE_DEFAULT),
+        (101, 0, IACE_DEFAULT),
+    ]
+
+
+def test_ime_disabled_session_attempts_all_restores_after_one_failure() -> None:
+    imm32 = FakeImm32()
+    session = ImeDisabledSession((101, 202), imm32=imm32)
+    session.disable()
+    imm32.failures.add((202, IACE_DEFAULT))
+
+    with pytest.raises(OSError, match=r"恢复.*IME"):
+        session.restore()
+
+    assert imm32.calls[-2:] == [
+        (202, 0, IACE_DEFAULT),
+        (101, 0, IACE_DEFAULT),
+    ]
+    imm32.failures.clear()
+    session.restore()
+    assert imm32.calls[-1] == (202, 0, IACE_DEFAULT)
 
 
 def test_window_client_region_converts_client_origin_to_screen_coordinates() -> None:
