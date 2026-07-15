@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Setup", "TestTarget", "DryRun", "Armed", "ControlledE2E")]
+    [ValidateSet("Setup", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]
     [string]$Mode = "DryRun",
 
     [string]$Config = "configs/controlled-window.json",
@@ -108,6 +108,19 @@ New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
 if ($Mode -eq "TestTarget") {
     & $uv run python -m delta_vision.controlled_target `
         --artifacts (Join-Path $Artifacts "target")
+    exit $LASTEXITCODE
+}
+
+if ($Mode -eq "Benchmark") {
+    $benchmarkConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $benchmarkArguments = @(
+        "run", "python", "-m", "delta_vision.benchmark",
+        "--window-title", $benchmarkConfig.target_window_title,
+        "--backend", $benchmarkConfig.capture_backend,
+        "--duration", "60",
+        "--artifacts", (Join-Path $Artifacts "capture-benchmark")
+    )
+    & $uv @benchmarkArguments
     exit $LASTEXITCODE
 }
 

@@ -10,7 +10,7 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
 
     assert raw.startswith(b"\xef\xbb\xbf")
     for fragment in (
-        '[ValidateSet("Setup", "TestTarget", "DryRun", "Armed", "ControlledE2E")]',
+        '[ValidateSet("Setup", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]',
         "winget.exe install --id astral-sh.uv -e",
         "https://astral.sh/uv/0.11.28/install.ps1",
         "python install 3.12",
@@ -18,6 +18,8 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "Local\\DeltaVisionWorker",
         "ConfirmArmed",
         "delta_vision.controlled_target",
+        "delta_vision.benchmark",
+        '"--duration", "60"',
         "delta_vision.worker",
         '"--armed"',
         "taskkill.exe",

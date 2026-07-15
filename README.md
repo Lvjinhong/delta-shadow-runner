@@ -77,7 +77,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 Dry-run 会执行真实截图、识别、A*、状态机和录制，但只记录计划动作，不调用 `SendInput`。因为目标不会移动，状态机最终应进入有限恢复或安全停止；这属于预期行为。
 
-### 2.4 显式 armed
+### 2.4 运行 60 秒截图基准
+
+保持测试窗口打开后运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode Benchmark
+```
+
+产物包括 `capture-metrics.json`、`first-frame.png` 和 `last-frame.png`。门槛是平均 `>=20 FPS`、抓帧 P95 `<=50ms`、分辨率漂移 `0`；`None` 帧单独计数，不和尺寸漂移混在一起。
+
+### 2.5 显式 armed
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
