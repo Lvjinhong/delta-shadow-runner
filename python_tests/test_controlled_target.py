@@ -102,7 +102,7 @@ def test_ground_truth_writer_appends_stable_jsonl(tmp_path) -> None:
         '{"event":"position","payload":{"arrived":true}}\n',
         encoding="utf-8",
     )
-    writer = GroundTruthWriter(path)
+    writer = GroundTruthWriter(path, run_id="controlled-run")
 
     writer.write("start", at_ns=1, payload={"x": 10.5, "y": 20.5})
     writer.write("arrived", at_ns=2, payload={"success": True})
@@ -112,4 +112,5 @@ def test_ground_truth_writer_appends_stable_jsonl(tmp_path) -> None:
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert [record["event"] for record in records] == ["start", "arrived"]
+    assert {record["run_id"] for record in records} == {"controlled-run"}
     assert records[0]["payload"] == {"x": 10.5, "y": 20.5}

@@ -31,7 +31,7 @@
 9. 前台窗口标题 + HWND、F12 急停、最大按键时长和后台释放 watchdog；
 10. PNG/JSONL 回放、独立输入事件流和 blind set 准确度评估；
 11. 标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作回放的单条离线 E2E；
-12. 393 项自动测试通过，总覆盖率 87.97%，独立 10-Gate 控制链验收通过。
+12. 419 项自动测试通过，总覆盖率 88.48%，独立 10-Gate 控制链验收通过。
 
 尚未完成的是《三角洲行动》真实路线数据和 Windows 真机 E2E。仓库不能凭合成数据承诺游戏准确率；必须先在你的固定分辨率、固定地图、固定出生区域和固定视角上采样并评估。
 
@@ -52,6 +52,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 脚本会安装固定版本 `uv 0.11.28`、Python 3.12，并按 `uv.lock` 同步依赖。`ExecutionPolicy Bypass` 只作用于这次 PowerShell 进程。
+
+### 2.1 一键 Windows Preflight
+
+完成 `configs\game-route.json` 和 `profiles\route-01\templates.json` 后，先打开游戏并停在稳定、可见的路线画面，再双击：
+
+```text
+start-windows-preflight.cmd
+```
+
+它会在同一次带时间戳的运行中依次完成：
+
+1. 安装/核对锁定的 uv、Python 和依赖；
+2. 只读校验游戏路线配置、模板 Profile 和来源哈希，不打开游戏进程；
+3. 启动独立受控窗口，实际验证截图 → 识别 → A* → `SendInput` → ground truth 到达；
+4. 留出 5 秒切回游戏，对游戏客户区执行 60 秒截图 benchmark，不发送游戏输入；
+5. 重新计算并核对所有门槛，生成 `preflight-report.json`。
+
+截图基准任一条件不满足即失败：实测时长 `< 60s`、无帧次数非零、近全黑帧非零、平均 FPS `< 20`、P95 抓帧延迟 `> 50ms`、分辨率漂移非零、目标窗口曾离开前台。指标 schema、`frame_count / duration` 与 FPS、延迟顺序、分辨率和有限数也会重新校验，不能只改 JSON 中的 `passed`。
+
+同一次 Preflight 使用唯一 `run_id` 绑定截图、Worker 和 ground truth；报告还会核对证据新鲜度、首末帧 SHA-256、事件单调时间、按键重放状态和最终事件顺序。受控 Worker 未到达、终态后还有输入、未观察到完整 `key_down/key_up`、ground truth 没有合法 `position/arrived`、退出码非零或任一证据不一致都会失败。
+
+Preflight 的 `SendInput` 只发给标题和 HWND 都经过校验的独立测试窗口；游戏阶段只截图。F12 仍是急停键。DryRun、Armed、ControlledE2E 和 Preflight 不能并行启动，重复运行会被 Windows mutex 拒绝。
 
 ## 3. 端到端制作一条游戏路线
 
@@ -234,6 +256,8 @@ copy configs\game-route.example.json configs\game-route.json
 
 ## 5. 运行
 
+首次运行或修改分辨率、HUD、模板、路线配置后，应先让 `start-windows-preflight.cmd` 通过。Preflight 只证明 Windows 截图和受控输入链可用，不代表真实游戏路线已经准确。
+
 双击：
 
 ```text
@@ -288,6 +312,27 @@ artifacts/runs/YYYYMMDD-HHMMSS/worker/
 
 `input-events.jsonl` 独立记录每个 `mouse_move/key_down/key_up`。即使最后一次输入发生在无截图、超时或异常退出路径，也不依赖“下一张截图”才能落盘。
 
+每次 Worker 运行都会清空该运行目录中的旧 `events.jsonl`，并给事件写入本次 `run_id`。不要手工把不同运行目录的证据拼成一份报告；Preflight 会将其判为失败。
+
+一次 Preflight 还会生成：
+
+```text
+artifacts/runs/YYYYMMDD-HHMMSS/
+├── preflight-report.json
+├── capture-benchmark/
+│   ├── capture-metrics.json
+│   ├── capture-gate.json
+│   ├── first-frame.png
+│   └── last-frame.png
+└── controlled-e2e/
+    ├── target/target-ground-truth.jsonl
+    └── worker/
+        ├── events.jsonl
+        └── replay/
+```
+
+`preflight-report.json` 的 `evidence` 会记录上述证据文件的路径、修改时间和 SHA-256；报告通过不等于游戏路线通过，仍需完成真实 blind set 和路线成功率验收。
+
 ## 7. 受控自检窗口
 
 `start-controlled-e2e.cmd` 只是验证“截图 → 识别 → A* → 标准输入 → 到达”的独立测试工具，不是产品平台，也不代表游戏路线准确。
@@ -312,7 +357,8 @@ artifacts/runs/YYYYMMDD-HHMMSS/worker/
 1. 必须从 Windows 可见交互桌面运行；
 2. 不要最小化游戏；
 3. 先把 `capture_backend` 从 `dxcam` 改为 `mss` 做一次兼容性对照；
-4. 一次配置失败只能说明该配置失败，不能据此推断目标程序永远不支持。
+4. 查看最近一次 `capture-gate.json` 的 `black_frames`、`missing_frames`、`foreground_window_mismatch`，并直接检查 `first-frame.png`、`last-frame.png`；
+5. 一次配置失败只能说明该配置失败，不能据此推断目标程序永远不支持。
 
 ### 找不到窗口
 

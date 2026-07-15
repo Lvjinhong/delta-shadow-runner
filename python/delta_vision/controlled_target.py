@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,8 +96,11 @@ class ControlledTargetModel:
 class GroundTruthWriter:
     """供独立评估器读取；Worker 不得读取此文件。"""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, run_id: str) -> None:
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("run_id 必须是非空字符串")
         self._path = Path(path)
+        self._run_id = run_id
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # 每次目标进程都是独立试次，先清空旧成功记录，避免复用 artifacts 时误判。
         self._path.write_text("", encoding="utf-8")
@@ -107,6 +111,7 @@ class GroundTruthWriter:
             "at_ns": at_ns,
             "payload": dict(payload),
             "schema_version": 1,
+            "run_id": self._run_id,
         }
         serialized = json.dumps(
             record,
@@ -120,14 +125,17 @@ class GroundTruthWriter:
             stream.write("\n")
 
 
-def run_window(*, artifacts: Path, ignore_input_ms: int) -> int:
+def run_window(*, artifacts: Path, ignore_input_ms: int, run_id: str) -> int:
     """启动独立 Tk 窗口；模块层不导入 Tk，保证无桌面环境也能跑单测。"""
 
     enable_per_monitor_dpi_awareness()
     import tkinter as tk
 
     artifacts.mkdir(parents=True, exist_ok=True)
-    writer = GroundTruthWriter(artifacts / "target-ground-truth.jsonl")
+    writer = GroundTruthWriter(
+        artifacts / "target-ground-truth.jsonl",
+        run_id=run_id,
+    )
     model = ControlledTargetModel(
         width=CANVAS_WIDTH,
         height=CANVAS_HEIGHT,
@@ -255,8 +263,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="独立 ground truth 输出目录",
     )
     parser.add_argument("--ignore-input-ms", type=int, default=0)
+    parser.add_argument("--run-id")
     args = parser.parse_args(argv)
-    return run_window(artifacts=args.artifacts, ignore_input_ms=args.ignore_input_ms)
+    return run_window(
+        artifacts=args.artifacts,
+        ignore_input_ms=args.ignore_input_ms,
+        run_id=args.run_id or uuid.uuid4().hex,
+    )
 
 
 if __name__ == "__main__":

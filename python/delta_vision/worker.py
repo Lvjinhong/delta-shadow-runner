@@ -7,6 +7,7 @@ import json
 import math
 import sys
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -382,6 +383,7 @@ def build_windows_runtime(
     *,
     artifacts: str | Path,
     armed: bool,
+    run_id: str | None = None,
     window_handle_resolver: Callable[[str], int] = find_window_handle,
     region_resolver: Callable[[str], CaptureRegion] = window_client_region,
     dxcam_factory: Callable[[CaptureRegion], _FrameSource] = DxcamFrameSource,
@@ -439,7 +441,11 @@ def build_windows_runtime(
             controller=controller,
             actuator=actuator,
             recorder=FrameRecorder(artifact_root / "replay"),
-            event_writer=JsonlEventWriter(artifact_root / "events.jsonl"),
+            event_writer=JsonlEventWriter(
+                artifact_root / "events.jsonl",
+                run_id=run_id,
+                truncate=True,
+            ),
             target_window_handle=target_window_handle,
         )
     except BaseException:
@@ -585,8 +591,14 @@ def run_windows_worker(
     *,
     artifacts: str | Path,
     armed: bool,
+    run_id: str | None = None,
 ) -> ControlLoopResult:
-    runtime = build_windows_runtime(settings, artifacts=artifacts, armed=armed)
+    runtime = build_windows_runtime(
+        settings,
+        artifacts=artifacts,
+        armed=armed,
+        run_id=run_id,
+    )
     return run_control_loop(
         source=runtime.source,
         controller=runtime.controller,
@@ -606,18 +618,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path("configs/controlled-window.json"),
     )
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--run-id")
     parser.add_argument(
         "--armed",
         action="store_true",
         help="显式启用标准 SendInput；默认只记录动作，不发送输入",
     )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="只校验配置和模板 Profile，不解析窗口、截图或发送输入",
+    )
     args = parser.parse_args(argv)
     artifacts = args.artifacts or Path("artifacts/runs") / time.strftime(
         "%Y%m%d-%H%M%S"
     )
+    run_id = args.run_id or uuid.uuid4().hex
     try:
         settings = load_worker_settings(args.config)
-        result = run_windows_worker(settings, artifacts=artifacts, armed=args.armed)
+        if args.validate_only:
+            print(
+                json.dumps(
+                    {
+                        "status": "valid",
+                        "config": str(args.config),
+                        "target_window_title": settings.target_window_title,
+                        "capture_backend": settings.capture_backend,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        result = run_windows_worker(
+            settings,
+            artifacts=artifacts,
+            armed=args.armed,
+            run_id=run_id,
+        )
     except Exception as error:
         print(f"Worker 启动或运行失败: {error}", file=sys.stderr)
         return 1
@@ -630,6 +667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "reason": result.reason,
                 "artifacts": str(artifacts),
                 "armed": args.armed,
+                "run_id": run_id,
             },
             ensure_ascii=False,
         )

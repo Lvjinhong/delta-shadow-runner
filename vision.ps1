@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]
+    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E", "Preflight")]
     [string]$Mode = "DryRun",
 
     [string]$Config = "configs/controlled-window.json",
@@ -21,6 +21,7 @@ param(
 
     [string]$ProfilePath,
 
+    [ValidatePattern("^[A-Za-z0-9._-]+$")]
     [string]$RunId,
 
     [ValidateRange(1, 86400)]
@@ -64,7 +65,7 @@ function Install-Uv {
     Write-Host "[Delta Vision] Installing uv $UvVersion..."
     if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
         & winget.exe install --id astral-sh.uv -e --version $UvVersion `
-            --accept-package-agreements --accept-source-agreements
+            --accept-package-agreements --accept-source-agreements | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "winget 安装 uv 失败，退出码: $LASTEXITCODE"
         }
@@ -74,7 +75,7 @@ function Install-Uv {
     $installerPath = Join-Path $env:TEMP "uv-$UvVersion-install.ps1"
     $installerUrl = "https://astral.sh/uv/0.11.28/install.ps1"
     Invoke-WebRequest -UseBasicParsing -Uri $installerUrl -OutFile $installerPath
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerPath
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerPath | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "Astral 官方安装脚本执行失败，退出码: $LASTEXITCODE"
     }
@@ -90,11 +91,11 @@ function Initialize-PythonEnvironment {
         throw "uv 安装后仍无法定位 uv.exe。请重新打开终端后再试。"
     }
 
-    & $uvPath python install 3.12
+    & $uvPath python install 3.12 | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "安装 Python 3.12 失败，退出码: $LASTEXITCODE"
     }
-    & $uvPath sync --frozen --python 3.12
+    & $uvPath sync --frozen --python 3.12 | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "按 uv.lock 同步依赖失败，退出码: $LASTEXITCODE"
     }
@@ -121,6 +122,9 @@ function Wait-ControlledTargetArrival {
         [Parameter(Mandatory = $true)]
         [string]$GroundTruthPath,
 
+        [Parameter(Mandatory = $true)]
+        [string]$RunId,
+
         [int]$TimeoutMs = 2000
     )
 
@@ -135,12 +139,19 @@ function Wait-ControlledTargetArrival {
                         continue
                     }
                     $event = $line | ConvertFrom-Json -ErrorAction Stop
+                    if ($event.run_id -ne $RunId) {
+                        continue
+                    }
                     if ($event.event -eq "start") {
                         $sawStart = $true
                         $latestTrialArrived = $false
                         continue
                     }
-                    if ($sawStart -and $event.payload.arrived -eq $true) {
+                    if (
+                        $sawStart `
+                        -and $event.event -eq "position" `
+                        -and $event.payload.arrived -eq $true
+                    ) {
                         $latestTrialArrived = $true
                     }
                 }
@@ -196,6 +207,53 @@ function Stop-ControlledTargetProcess {
     }
 }
 
+function Invoke-ControlledE2E {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uv,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactsPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RunId
+    )
+
+    $targetProcess = $null
+    $workerExitCode = 1
+    $cleanupSucceeded = $true
+    $groundTruthPath = Join-Path $ArtifactsPath "target\target-ground-truth.jsonl"
+    try {
+        $targetArtifactsPath = Join-Path $ArtifactsPath "target"
+        # Windows PowerShell 5.1 会把 ArgumentList 数组拼成字符串；显式保留路径引号。
+        $targetArtifactsArgument = '"' + $targetArtifactsPath + '"'
+        $runIdArgument = '"' + $RunId + '"'
+        $targetArgumentLine = "run python -m delta_vision.controlled_target --artifacts $targetArtifactsArgument --run-id $runIdArgument"
+        $targetProcess = Start-Process -FilePath $Uv -ArgumentList $targetArgumentLine -PassThru
+        Start-Sleep -Seconds 2
+        & $Uv run python -m delta_vision.worker `
+            --config $ConfigPath --artifacts (Join-Path $ArtifactsPath "worker") `
+            --run-id $RunId "--armed" `
+            | Out-Host
+        $workerExitCode = $LASTEXITCODE
+        if ($workerExitCode -eq 0 -and -not (Wait-ControlledTargetArrival `
+            -GroundTruthPath $groundTruthPath -RunId $RunId)) {
+            Write-Warning "Worker 报告到达，但受控目标 ground truth 未确认到达。"
+            $workerExitCode = 3
+        }
+    }
+    finally {
+        $cleanupSucceeded = Stop-ControlledTargetProcess -TargetProcess $targetProcess
+    }
+    if (-not $cleanupSucceeded) {
+        $workerExitCode = 4
+    }
+    return $workerExitCode
+}
+
 $uv = Initialize-PythonEnvironment
 if ($Mode -eq "Setup") {
     Write-Host "[Delta Vision] Python 3.12 and locked dependencies are ready."
@@ -203,6 +261,7 @@ if ($Mode -eq "Setup") {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$effectiveRunId = if ($RunId) { $RunId } else { [Guid]::NewGuid().ToString("N") }
 if (-not $Artifacts) {
     $Artifacts = Join-Path $PSScriptRoot "artifacts\runs\$timestamp"
 }
@@ -257,36 +316,28 @@ New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
 
 if ($Mode -eq "TestTarget") {
     & $uv run python -m delta_vision.controlled_target `
-        --artifacts (Join-Path $Artifacts "target")
+        --artifacts (Join-Path $Artifacts "target") --run-id $effectiveRunId
     exit $LASTEXITCODE
 }
 
 if ($Mode -eq "Benchmark") {
-    $benchmarkConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
     $benchmarkArguments = @(
         "run", "python", "-m", "delta_vision.benchmark",
-        "--window-title", $benchmarkConfig.target_window_title,
-        "--backend", $benchmarkConfig.capture_backend,
+        "--config", $configPath,
         "--duration", "60",
-        "--artifacts", (Join-Path $Artifacts "capture-benchmark")
+        "--artifacts", (Join-Path $Artifacts "capture-benchmark"),
+        "--run-id", $effectiveRunId
     )
     & $uv @benchmarkArguments
     exit $LASTEXITCODE
 }
 
 if ($Mode -eq "DryRun") {
-    & $uv run python -m delta_vision.worker `
-        --config $configPath --artifacts (Join-Path $Artifacts "worker")
-    exit $LASTEXITCODE
-}
-
-Assert-ArmedConfirmation
-$workerMutex = Enter-WorkerLock
-
-if ($Mode -eq "Armed") {
+    $workerMutex = Enter-WorkerLock
     try {
         & $uv run python -m delta_vision.worker `
-            --config $configPath --artifacts (Join-Path $Artifacts "worker") "--armed"
+            --config $configPath --artifacts (Join-Path $Artifacts "worker") `
+            --run-id $effectiveRunId
         $workerExitCode = $LASTEXITCODE
     }
     finally {
@@ -296,36 +347,87 @@ if ($Mode -eq "Armed") {
     exit $workerExitCode
 }
 
-$targetProcess = $null
-$workerExitCode = 1
-$cleanupSucceeded = $true
-$groundTruthPath = Join-Path $Artifacts "target\target-ground-truth.jsonl"
-try {
-    $targetArguments = @(
-        "run", "python", "-m", "delta_vision.controlled_target",
-        "--artifacts", (Join-Path $Artifacts "target")
-    )
-    $targetProcess = Start-Process -FilePath $uv -ArgumentList $targetArguments -PassThru
-    Start-Sleep -Seconds 2
-    & $uv run python -m delta_vision.worker `
-        --config $configPath --artifacts (Join-Path $Artifacts "worker") "--armed"
-    $workerExitCode = $LASTEXITCODE
-    if ($workerExitCode -eq 0 -and -not (Wait-ControlledTargetArrival `
-        -GroundTruthPath $groundTruthPath)) {
-        Write-Warning "Worker 报告到达，但受控目标 ground truth 未确认到达。"
-        $workerExitCode = 3
-    }
-}
-finally {
+Assert-ArmedConfirmation
+$workerMutex = Enter-WorkerLock
+
+if ($Mode -eq "Armed") {
     try {
-        $cleanupSucceeded = Stop-ControlledTargetProcess -TargetProcess $targetProcess
+        & $uv run python -m delta_vision.worker `
+            --config $configPath --artifacts (Join-Path $Artifacts "worker") `
+            --run-id $effectiveRunId "--armed"
+        $workerExitCode = $LASTEXITCODE
     }
     finally {
         $workerMutex.ReleaseMutex()
         $workerMutex.Dispose()
     }
+    exit $workerExitCode
 }
-if (-not $cleanupSucceeded) {
-    $workerExitCode = 4
+
+if ($Mode -eq "ControlledE2E") {
+    try {
+        $workerExitCode = Invoke-ControlledE2E `
+            -Uv $uv -ConfigPath $configPath -ArtifactsPath $Artifacts `
+            -RunId $effectiveRunId
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
 }
-exit $workerExitCode
+
+$controlledArtifacts = Join-Path $Artifacts "controlled-e2e"
+$benchmarkArtifacts = Join-Path $Artifacts "capture-benchmark"
+$controlledConfigPath = Join-Path $PSScriptRoot "configs\controlled-window.json"
+try {
+    & $uv run python -m delta_vision.worker `
+        --config $configPath "--validate-only"
+    $configExitCode = $LASTEXITCODE
+
+    $controlledExitCode = Invoke-ControlledE2E `
+        -Uv $uv -ConfigPath $controlledConfigPath -ArtifactsPath $controlledArtifacts `
+        -RunId $effectiveRunId
+
+    Write-Host "[Delta Vision] 受控 E2E 已结束，请在 5 秒内切回三角洲行动窗口。"
+    Start-Sleep -Seconds 5
+    $benchmarkArguments = @(
+        "run", "python", "-m", "delta_vision.benchmark",
+        "--config", $configPath,
+        "--duration", "60",
+        "--artifacts", $benchmarkArtifacts,
+        "--run-id", $effectiveRunId
+    )
+    & $uv @benchmarkArguments
+    $benchmarkExitCode = $LASTEXITCODE
+
+    & $uv run python -m delta_vision.preflight `
+        --run-id $effectiveRunId `
+        --config $configPath `
+        --capture-metrics (Join-Path $benchmarkArtifacts "capture-metrics.json") `
+        --capture-gate (Join-Path $benchmarkArtifacts "capture-gate.json") `
+        --worker-events (Join-Path $controlledArtifacts "worker\events.jsonl") `
+        --ground-truth (Join-Path $controlledArtifacts "target\target-ground-truth.jsonl") `
+        --config-exit-code $configExitCode `
+        --controlled-exit-code $controlledExitCode `
+        --benchmark-exit-code $benchmarkExitCode `
+        --output (Join-Path $Artifacts "preflight-report.json")
+    $reportExitCode = $LASTEXITCODE
+
+    if (
+        $configExitCode -ne 0 `
+        -or $controlledExitCode -ne 0 `
+        -or $benchmarkExitCode -ne 0 `
+        -or $reportExitCode -ne 0
+    ) {
+        $preflightExitCode = 2
+    }
+    else {
+        $preflightExitCode = 0
+    }
+}
+finally {
+    $workerMutex.ReleaseMutex()
+    $workerMutex.Dispose()
+}
+exit $preflightExitCode

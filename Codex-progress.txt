@@ -20,7 +20,10 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - ReplayFrameSource 已直接实现 Worker 的 grab/close 协议，同时保持独立迭代游标；标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放的离线 E2E 已通过。
 - 新增显式不可变 ObservationScope：首次定位明确使用全局模板；路线建立后正常候选只含 current/next 的有归属模板，主候选拒绝后才诊断其他已知节点并安全停机；空候选与无归属模板 fail closed，范围外颜色锚点同样触发安全停止。
 - blind evaluator 显式标记 observation_scope=unconstrained_perception，不从真值标签构造候选集；在线路线约束只由完整路线 E2E 验证。
-- 本机完整 Python 回归：393 项测试通过，总覆盖率 87.97%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
+- 新增 Windows Preflight 一键入口：锁定依赖与配置只读校验、受控 SendInput E2E、5 秒切回游戏、60 秒前台截图基准和机器可判定报告串联执行；dry-run 也纳入单 Worker mutex。
+- 截图基准新增 missing/near-black/foreground HWND 硬门槛并落盘 capture-gate.json；Preflight 会严格校验指标 schema/FPS 一致性、唯一 run_id、证据新鲜度、首末帧 SHA-256、事件时间与终态顺序、按键释放和独立 ground truth，即使产物缺失也保留失败报告。该链尚未在 Windows 可见交互桌面实跑。
+- 独立评审实际复跑 9 个完整证据反例和 1 个缺参数反例，均未误报 PASS；有效基线仍通过。PowerShell 5.1 空格路径修复已完成源码复审。
+- 本机完整 Python 回归：419 项测试通过，总覆盖率 88.48%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
 
 [已经具备]
 - DXcam 0.3.0 主截图 backend、MSS 10.2.0 回退 backend。
@@ -33,7 +36,7 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 
 [尚未完成，不能宣称通过]
 - 尚无《三角洲行动》真实截图、独立 blind set、precision/recall/F1 或固定路线成功率。
-- Windows 主机 192.168.3.7 在 2026-07-16 最新 ping 仍为 100% 丢包；当前未完成真实交互桌面截图、PowerShell 5.1、SendInput、F12 <=200ms、受控路线 20/20 或游戏路线 E2E。
+- Windows 主机 192.168.3.7 在 2026-07-16 已恢复 ping/SSH；当前仍未完成真实交互桌面截图、PowerShell 5.1、SendInput、F12 <=200ms、受控路线 20/20 或游戏路线 E2E。
 - feature-list.json 中相关功能继续保持 passes=false。
 
 [下一步]

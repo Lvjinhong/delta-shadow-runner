@@ -9,7 +9,7 @@ import pytest
 from delta_vision.actuator import DryRunActuator
 from delta_vision.config import CaptureRegion
 from delta_vision.controlled_target import GOAL_RADIUS
-from delta_vision.events import JsonlEventWriter
+from delta_vision.events import JsonlEventWriter, RuntimeEvent
 from delta_vision.frames import (
     CapturedFrame,
     DatasetContentDigest,
@@ -22,6 +22,9 @@ from delta_vision.worker import (
     build_windows_runtime,
     load_worker_settings,
     run_control_loop,
+)
+from delta_vision.worker import (
+    main as worker_main,
 )
 
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "controlled-window.json"
@@ -208,6 +211,19 @@ def test_load_worker_settings_rejects_unknown_schema(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="schema_version"):
         load_worker_settings(path)
+
+
+def test_worker_validate_only_checks_config_without_opening_windows(capsys) -> None:
+    exit_code = worker_main(["--config", str(CONFIG_PATH), "--validate-only"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "status": "valid",
+        "config": str(CONFIG_PATH),
+        "target_window_title": "Delta Vision Test Target",
+        "capture_backend": "dxcam",
+    }
 
 
 @pytest.mark.parametrize("schema_version", [True, 1.0, "1"])
@@ -751,6 +767,7 @@ def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
         settings,
         artifacts=tmp_path,
         armed=False,
+        run_id="worker-run",
         window_handle_resolver=resolve_handle,
         region_resolver=resolve_region,
         dxcam_factory=lambda region: source,
@@ -763,6 +780,11 @@ def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
     assert runtime.source is source
     assert runtime.target_window_handle == 123
     assert resolver_calls == ["dpi-aware-region", "window-handle"]
+    runtime.event_writer.write(
+        RuntimeEvent(event_type="frame", at_ns=1, payload={})
+    )
+    event = json.loads((tmp_path / "events.jsonl").read_text(encoding="utf-8"))
+    assert event["run_id"] == "worker-run"
 
 
 def test_build_windows_runtime_rejects_template_profile_resolution_mismatch(

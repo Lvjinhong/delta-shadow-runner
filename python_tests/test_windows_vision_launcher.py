@@ -13,7 +13,8 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
     for fragment in (
         (
             '[ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", '
-            '"TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]'
+            '"TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E", '
+            '"Preflight")]'
         ),
         "winget.exe install --id astral-sh.uv -e",
         "https://astral.sh/uv/0.11.28/install.ps1",
@@ -28,14 +29,24 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "delta_vision.sample_frames",
         "delta_vision.calibrate_templates",
         "delta_vision.evaluate_templates",
+        "--validate-only",
+        "delta_vision.preflight",
+        "capture-gate.json",
+        "preflight-report.json",
+        "$effectiveRunId",
+        "--run-id",
+        "--config-exit-code",
+        "--controlled-exit-code",
+        "--benchmark-exit-code",
+        "Invoke-ControlledE2E",
         '"--split"',
         '"--armed"',
         "taskkill.exe",
         "Wait-ControlledTargetArrival",
         "target-ground-truth.jsonl",
         '$event.event -eq "start"',
+        '$event.event -eq "position"',
         "$sawStart = $true",
-        "$sawStart -and $event.payload.arrived -eq $true",
         "$event.payload.arrived -eq $true",
         "$workerExitCode = 3",
         "$taskkillExitCode = $LASTEXITCODE",
@@ -43,6 +54,23 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "$workerExitCode = 4",
     ):
         assert fragment in script, f"vision.ps1 缺少契约片段: {fragment}"
+
+    dry_run_block = script[
+        script.index('if ($Mode -eq "DryRun")') : script.index(
+            'if ($Mode -eq "Armed")'
+        )
+    ]
+    assert "Enter-WorkerLock" in dry_run_block
+    assert "ReleaseMutex" in dry_run_block
+
+    controlled_function = script[
+        script.index("function Invoke-ControlledE2E") : script.index(
+            "$uv = Initialize-PythonEnvironment"
+        )
+    ]
+    assert "-ArgumentList $targetArgumentLine" in controlled_function
+    assert '$targetArtifactsArgument = \'"\' + $targetArtifactsPath + \'"\'' in controlled_function
+    assert "$targetArguments = @(" not in controlled_function
 
 
 def test_controlled_e2e_cmd_requires_explicit_confirmation() -> None:
@@ -68,6 +96,19 @@ def test_game_route_cmd_defaults_to_dry_run_and_double_confirms_armed() -> None:
     assert "-Mode DryRun" in script
     assert "-Mode Armed" in script
     assert "-ConfirmArmed" in script
+    assert "F12" in script
+
+
+def test_windows_preflight_cmd_requires_game_config_and_explicit_confirmation() -> None:
+    script = (PROJECT_ROOT / "start-windows-preflight.cmd").read_text(
+        encoding="utf-8"
+    )
+
+    assert "configs\\game-route.json" in script
+    assert "choice /C YN" in script
+    assert "-Mode Preflight" in script
+    assert "-ConfirmArmed" in script
+    assert "60" in script
     assert "F12" in script
 
 

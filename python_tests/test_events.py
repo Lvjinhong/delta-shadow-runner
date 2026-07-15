@@ -38,6 +38,18 @@ def test_jsonl_event_writer_appends_without_overwriting(tmp_path) -> None:
     assert [record["event_type"] for record in records] == ["start", "stop"]
 
 
+def test_jsonl_event_writer_binds_run_id_and_can_truncate_old_run(tmp_path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"run_id":"old-run"}\n', encoding="utf-8")
+    writer = JsonlEventWriter(path, run_id="new-run", truncate=True)
+
+    writer.write(RuntimeEvent(event_type="start", at_ns=1, payload={}))
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["run_id"] == "new-run"
+    assert "old-run" not in path.read_text(encoding="utf-8")
+
+
 def test_runtime_event_rejects_invalid_fields() -> None:
     with pytest.raises(ValueError, match="event_type"):
         RuntimeEvent(event_type="", at_ns=-1, payload={})

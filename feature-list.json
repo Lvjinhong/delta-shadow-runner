@@ -1,6 +1,6 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 10,
+  "version": 12,
   "lastUpdated": "2026-07-16",
   "features": [
     {
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：393 项测试、Ruff 通过，总覆盖率 87.97%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000"
+        "本机 Python 3.12.12：419 项测试、Ruff 通过，总覆盖率 88.48%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000"
       ]
     },
     {
@@ -42,7 +42,7 @@
       "description": "Windows 外部截图 backend 在 1080p 连续 60 秒达到平均至少 20 FPS、P95 不超过 50ms且无尺寸漂移",
       "passes": false,
       "evidence": [
-        "已实现 DXcam 0.3.0 与 MSS 10.2.0 adapter、BGRA 到独立只读 BGR 帧及 60 秒基准 CLI",
+        "已实现 DXcam 0.3.0 与 MSS 10.2.0 adapter、BGRA 到独立只读 BGR 帧及 60 秒基准 CLI；missing frame、暗像素比例近黑、前台 HWND 失配、FPS、P95 延迟和分辨率漂移均为硬门槛并落盘 capture-gate.json；指标 schema、内部一致性和首末帧 SHA-256 会再次校验",
         "本机 fake backend 单测通过；Windows 可见桌面 60 秒指标尚未执行"
       ]
     },
@@ -102,8 +102,8 @@
       "description": "Windows 一键入口完成依赖、配置、采集和安全自检，重复执行不启动重复 Worker，失败信息可定位",
       "passes": false,
       "evidence": [
-        "vision.ps1 与 start-game-route.cmd 已实现 Setup、Sample、Calibrate、Evaluate、DryRun、Armed、固定依赖和双重 armed 确认；start-controlled-e2e.cmd 保留为受控自检",
-        "PowerShell/launcher 配置契约测试通过；Windows PowerShell 5.1 实际启动尚未执行"
+        "vision.ps1、start-game-route.cmd 与 start-windows-preflight.cmd 已实现固定依赖、配置只读校验、受控 SendInput E2E、5 秒人工切回、60 秒前台截图基准、DryRun/Armed 和机器可判定汇总报告",
+        "dry-run、armed、ControlledE2E 与 Preflight 共用 Local\\DeltaVisionWorker mutex；唯一 run_id 绑定截图/Worker/ground truth，独立评审实际复跑旧产物、首末帧篡改、终态后输入、非法 arrived、缺失产物和伪造指标均未误报 PASS；Windows PowerShell 5.1 实际启动尚未执行"
       ]
     },
     {
@@ -113,7 +113,7 @@
       "passes": false,
       "evidence": [
         "独立 evaluator 复跑本地合成闭环：arrived、4 帧录制/回放、pressed_keys 为空、低置信 key_down=0",
-        "Windows 主机 192.168.3.7 当前离线，真实 DXcam/MSS + SendInput 路线 20/20 尚未执行"
+        "Windows 主机 192.168.3.7 已恢复 ping/SSH，真实交互桌面 DXcam/MSS + SendInput 路线 20/20 尚未执行"
       ]
     },
     {
