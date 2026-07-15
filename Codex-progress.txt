@@ -24,6 +24,8 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 截图基准新增 missing/near-black/foreground HWND 硬门槛并落盘 capture-gate.json；Preflight 会严格校验指标 schema/FPS 一致性、唯一 run_id、证据新鲜度、首末帧 SHA-256、事件时间与终态顺序、按键释放和独立 ground truth，即使产物缺失也保留失败报告。该链尚未在 Windows 可见交互桌面实跑。
 - 独立评审实际复跑 9 个完整证据反例和 1 个缺参数反例，均未误报 PASS；有效基线仍通过。PowerShell 5.1 空格路径修复已完成源码复审。
 - 本机完整 Python 回归：419 项测试通过，总覆盖率 88.48%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
+- Windows 已同步到 aa94d18：uv 0.11.28、CPython 3.12.13 与锁定依赖安装成功；Windows 原生 419 项测试、88.48% 覆盖率、Ruff、sdist/wheel build 均通过。OpenCV 精确模板分数存在约 1.13e-6 的平台舍入差异，测试已改用 1e-5 严格容差，算法阈值未变。
+- Windows 交互任务已实际启动受控 Tk 目标，但 console Session 1 处于锁屏（LogonUI）；DXcam 返回 0x80070005，MSS 对照返回 BitBlt 失败，均按失败处理。解锁桌面后需重跑，不能把这两次样本推成 backend 结构性不支持。
 
 [已经具备]
 - DXcam 0.3.0 主截图 backend、MSS 10.2.0 回退 backend。
@@ -36,11 +38,11 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 
 [尚未完成，不能宣称通过]
 - 尚无《三角洲行动》真实截图、独立 blind set、precision/recall/F1 或固定路线成功率。
-- Windows 主机 192.168.3.7 在 2026-07-16 已恢复 ping/SSH；当前仍未完成真实交互桌面截图、PowerShell 5.1、SendInput、F12 <=200ms、受控路线 20/20 或游戏路线 E2E。
+- Windows 主机 192.168.3.7 在 2026-07-16 已恢复 ping/SSH；当前 console Session 1 锁屏，且 Windows 尚无 configs/game-route.json 与 profiles/route-01/templates.json。仍未完成可见桌面截图、SendInput、F12 <=200ms、受控路线 20/20 或游戏路线 E2E。
 - feature-list.json 中相关功能继续保持 passes=false。
 
 [下一步]
-1. Windows 主机上线后，在交互桌面运行 Setup 与 60 秒 DXcam/MSS 基准。
+1. 解锁 Windows console Session 1 并保持桌面可见，重跑受控 E2E 与 60 秒 DXcam/MSS 基准。
 2. 采集同一固定路线的 calibration 与独立 blind 运行，按 README 生成标签、Profile 和 metrics。
 3. 先跑 game dry-run，再跑受控窗口 20/20、F12 <=200ms，最后在授权游戏场景跑固定路线 armed E2E。
 4. 根据真实 blind metrics 与完整路线结果调整 ROI、模板、mouse_dx/dy 和状态机阈值，不凭单次成功宣称准确率。

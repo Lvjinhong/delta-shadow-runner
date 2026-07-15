@@ -1,6 +1,6 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 12,
+  "version": 13,
   "lastUpdated": "2026-07-16",
   "features": [
     {
@@ -33,7 +33,8 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：419 项测试、Ruff 通过，总覆盖率 88.48%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000"
+        "本机 Python 3.12.12：419 项测试、Ruff 通过，总覆盖率 88.48%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000",
+        "Windows CPython 3.12.13：419 项测试、Ruff、sdist/wheel build 通过；OpenCV 平台舍入只调整测试容差，业务阈值未变"
       ]
     },
     {
@@ -113,7 +114,7 @@
       "passes": false,
       "evidence": [
         "独立 evaluator 复跑本地合成闭环：arrived、4 帧录制/回放、pressed_keys 为空、低置信 key_down=0",
-        "Windows 主机 192.168.3.7 已恢复 ping/SSH，真实交互桌面 DXcam/MSS + SendInput 路线 20/20 尚未执行"
+        "Windows 交互任务已启动受控 Tk 目标，但 console Session 1 当前锁屏；DXcam 返回 0x80070005，MSS 对照返回 BitBlt 失败，均未误报通过。解锁后的 DXcam/MSS + SendInput 路线 20/20 尚未执行"
       ]
     },
     {
