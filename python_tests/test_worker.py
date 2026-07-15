@@ -208,13 +208,22 @@ class FakeGateway:
 def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
     settings = load_worker_settings(CONFIG_PATH)
     source = FakeFrameSource([])
+    resolver_calls = []
+
+    def resolve_region(_: str) -> CaptureRegion:
+        resolver_calls.append("dpi-aware-region")
+        return CaptureRegion(0, 0, 800, 600)
+
+    def resolve_handle(_: str) -> int:
+        resolver_calls.append("window-handle")
+        return 123
 
     runtime = build_windows_runtime(
         settings,
         artifacts=tmp_path,
         armed=False,
-        window_handle_resolver=lambda _: 123,
-        region_resolver=lambda _: CaptureRegion(0, 0, 800, 600),
+        window_handle_resolver=resolve_handle,
+        region_resolver=resolve_region,
         dxcam_factory=lambda region: source,
         gateway_factory=lambda: (_ for _ in ()).throw(
             AssertionError("dry-run 不应加载输入 gateway")
@@ -224,6 +233,7 @@ def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
     assert isinstance(runtime.actuator, DryRunActuator)
     assert runtime.source is source
     assert runtime.target_window_handle == 123
+    assert resolver_calls == ["dpi-aware-region", "window-handle"]
 
 
 def test_build_windows_runtime_armed_uses_bound_win32_safety_gate(tmp_path) -> None:

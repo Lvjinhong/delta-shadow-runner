@@ -325,8 +325,9 @@ def build_windows_runtime(
     unsupported_keys = allowed_keys - SCAN_CODES.keys()
     if unsupported_keys:
         raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
-    target_window_handle = window_handle_resolver(settings.target_window_title)
+    # region_resolver 会先建立 DPI Awareness，随后解析的 HWND 与 DXGI 使用同一坐标系。
     region = region_resolver(settings.target_window_title)
+    target_window_handle = window_handle_resolver(settings.target_window_title)
     source_factory = dxcam_factory if settings.capture_backend == "dxcam" else mss_factory
     source = source_factory(region)
     try:
