@@ -99,7 +99,7 @@ class MatcherConfiguration:
         if not _is_finite_number(self.minimum_template_margin) or not (
             0 <= self.minimum_template_margin <= 1
         ):
-            raise ValueError("跨模板差值必须位于 0 到 1 之间")
+            raise ValueError("不同 waypoint 的候选差值必须位于 0 到 1 之间")
         if type(self.nms_radius_px) is not int or self.nms_radius_px <= 0:
             raise ValueError("NMS 半径必须是正整数")
 

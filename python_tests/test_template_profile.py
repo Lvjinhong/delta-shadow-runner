@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from delta_vision.frames import CapturedFrame, DatasetContentDigest
+from delta_vision.navigation import ObservationScope
 from delta_vision.template_profile import load_template_profile
 
 
@@ -98,7 +99,10 @@ def test_load_template_profile_builds_traceable_route_observer(tmp_path) -> None
     frame[35:47, 60:76] = _template(1)
     frame.setflags(write=False)
 
-    observation = profile.observer.observe(CapturedFrame(1, 2, frame, "fixture"))
+    observation = profile.observer.observe(
+        CapturedFrame(1, 2, frame, "fixture"),
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
 
     assert profile.frame_size == (180, 120)
     assert len(profile.manifest_sha256) == 64
@@ -393,7 +397,10 @@ def test_loaded_template_is_bound_to_the_hashed_image_bytes(tmp_path, monkeypatc
     frame[35:47, 60:76] = original
     frame.setflags(write=False)
 
-    observation = profile.observer.observe(CapturedFrame(1, 2, frame, "fixture"))
+    observation = profile.observer.observe(
+        CapturedFrame(1, 2, frame, "fixture"),
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
 
     assert observation.centroid == (200.0, 10.0)
 

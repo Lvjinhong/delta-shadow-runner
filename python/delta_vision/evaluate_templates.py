@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .frames import DatasetContentDigest, ReplayFrameSource, frame_content_sha256
+from .navigation import ObservationScope
 from .template_profile import load_template_profile
 
 
@@ -266,7 +267,10 @@ def evaluate_template_profile(
             unlabeled_sequences.append(frame.sequence)
             continue
         seen_sequences.add(frame.sequence)
-        observation = profile.observer.observe(frame)
+        observation = profile.observer.observe(
+            frame,
+            scope=ObservationScope(allowed_waypoint_ids=None),
+        )
         predicted_position = observation.centroid
         error = None
         exact_position = None
@@ -351,6 +355,7 @@ def evaluate_template_profile(
         "dataset_content_sha256": dataset_content_digest.hexdigest(),
         "labels_sha256": labels_sha256,
         "split": split,
+        "observation_scope": "unconstrained_perception",
         "frame_size": list(frame_size),
         "distance_tolerance_route_units": float(distance_tolerance),
         "dataset_frame_count": len(seen_sequences),

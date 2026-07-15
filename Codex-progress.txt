@@ -12,13 +12,15 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 早期 React/Node 模拟平台、REST/WebSocket、浏览器 Dashboard、npm/Vite/Playwright 工具链和旧启动入口已从当前工作树移除；历史仍可从 Git 找回。
 - 删除前已把旧 TypeScript A* 的关键安全回归迁到 Python：未知节点、贪心陷阱、极端坐标、累计代价溢出、零权边、重复边、悬空边、非有限值和输入不可变。
 - Python A* 新增 1000 轮固定种子随机图与参考 Dijkstra 差分；修复极端坐标下 `0 * inf` 产生 NaN 导致错误选路，以及累计代价溢出错误缺少具体边的问题。
-- 新增多尺度 OpenCV 模板匹配：固定 ROI、NMS、阈值、空间歧义拒绝、跨模板歧义拒绝和路线坐标映射。
+- 新增多尺度 OpenCV 模板匹配：固定 ROI、NMS、阈值、空间歧义拒绝、跨 waypoint 歧义拒绝和路线坐标映射；同 waypoint 的多张外观模板先聚合，不会彼此制造假歧义。
 - 新增可追溯模板 Profile：固定分辨率、命名 ROI、模板/manifest SHA-256、来源 run/sequence、路径逃逸保护、单次字节哈希与解码、无可用缩放比例拒绝。
 - 新增人工路线 calibration/validation/blind 采样、流式标定和独立评估；拒绝 run、整帧和感知 ROI 泄漏，并强制 100% 标签覆盖。
 - Worker 已接入 template profile schema v2、抽象路线位置、waypoint/A*、每条边一次相对鼠标转向和重复有界按键脉冲。
 - replay 新增独立 input-events.jsonl；正常结束、无下一帧超时、异常退出和慢截图/watchdog 并发均保留输入顺序。
 - ReplayFrameSource 已直接实现 Worker 的 grab/close 协议，同时保持独立迭代游标；标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放的离线 E2E 已通过。
-- 本机完整 Python 回归：386 项测试通过，总覆盖率 87.78%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
+- 新增显式不可变 ObservationScope：首次定位明确使用全局模板；路线建立后正常候选只含 current/next 的有归属模板，主候选拒绝后才诊断其他已知节点并安全停机；空候选与无归属模板 fail closed，范围外颜色锚点同样触发安全停止。
+- blind evaluator 显式标记 observation_scope=unconstrained_perception，不从真值标签构造候选集；在线路线约束只由完整路线 E2E 验证。
+- 本机完整 Python 回归：393 项测试通过，总覆盖率 87.97%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
 
 [已经具备]
 - DXcam 0.3.0 主截图 backend、MSS 10.2.0 回退 backend。

@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 
 from .config import CaptureRegion
 from .frames import CapturedFrame
-from .navigation import WaypointObservation
+from .navigation import ObservationScope, WaypointObservation
 
 MatchReason = Literal["accepted", "below_threshold", "ambiguous", "no_candidate"]
 BBox = tuple[int, int, int, int]
@@ -274,7 +274,7 @@ class RouteTemplate:
 
 
 class TemplateWaypointObserver:
-    """从多个关键帧模板中选择唯一路线位置，拒绝跨模板歧义。"""
+    """从多个关键帧模板中选择唯一路线位置，拒绝跨 waypoint 歧义。"""
 
     def __init__(
         self,
@@ -297,12 +297,54 @@ class TemplateWaypointObserver:
             not math.isfinite(minimum_template_margin)
             or not 0 <= minimum_template_margin <= 1
         ):
-            raise ValueError("跨模板最佳与次佳差值必须位于 0 到 1 之间")
+            raise ValueError("不同 waypoint 的最佳与次佳差值必须位于 0 到 1 之间")
         self._templates = templates
         self._expected_frame_size = expected_frame_size
         self._minimum_template_margin = minimum_template_margin
 
-    def observe(self, frame: CapturedFrame) -> WaypointObservation:
+    def _best_match(
+        self,
+        frame: CapturedFrame,
+        templates: tuple[RouteTemplate, ...],
+    ) -> tuple[RouteTemplate, TemplateMatchObservation, bool] | None:
+        if not templates:
+            return None
+        matches = sorted(
+            (
+                (route_template, route_template.detector.detect(frame.image))
+                for route_template in templates
+            ),
+            key=lambda item: (-item[1].confidence, item[0].template_id),
+        )
+        best_by_waypoint: dict[
+            str | None,
+            tuple[RouteTemplate, TemplateMatchObservation],
+        ] = {}
+        for route_template, match in matches:
+            existing = best_by_waypoint.get(route_template.waypoint_id)
+            if existing is None or (match.accepted and not existing[1].accepted):
+                best_by_waypoint[route_template.waypoint_id] = (route_template, match)
+        waypoint_matches = sorted(
+            best_by_waypoint.values(),
+            key=lambda item: (-item[1].confidence, item[0].template_id),
+        )
+        best_template, best_match = waypoint_matches[0]
+        runner_up_score = (
+            0 if len(waypoint_matches) == 1 else waypoint_matches[1][1].confidence
+        )
+        accepted = (
+            best_match.accepted
+            and best_match.confidence - runner_up_score
+            >= self._minimum_template_margin
+        )
+        return best_template, best_match, accepted
+
+    def observe(
+        self,
+        frame: CapturedFrame,
+        *,
+        scope: ObservationScope,
+    ) -> WaypointObservation:
         actual_size = (int(frame.image.shape[1]), int(frame.image.shape[0]))
         if actual_size != self._expected_frame_size:
             return WaypointObservation(
@@ -312,24 +354,57 @@ class TemplateWaypointObserver:
                 centroid=None,
                 waypoint_id=None,
             )
-        matches = sorted(
-            (
-                (route_template, route_template.detector.detect(frame.image))
+        assigned_templates = tuple(
+            route_template
+            for route_template in self._templates
+            if route_template.waypoint_id is not None
+        )
+        templates = (
+            assigned_templates
+            if scope.allowed_waypoint_ids is None
+            else tuple(
+                route_template
+                for route_template in assigned_templates
+                if route_template.waypoint_id in scope.allowed_waypoint_ids
+            )
+        )
+        decision = self._best_match(frame, templates)
+        if decision is not None and decision[2]:
+            best_template, best_match, _ = decision
+            return WaypointObservation(
+                frame_sequence=frame.sequence,
+                captured_at_ns=frame.captured_at_ns,
+                confidence=best_match.confidence,
+                centroid=best_template.route_position,
+                waypoint_id=best_template.waypoint_id,
+            )
+
+        allowed = scope.allowed_waypoint_ids
+        if allowed:
+            excluded_templates = tuple(
+                route_template
                 for route_template in self._templates
-            ),
-            key=lambda item: (-item[1].confidence, item[0].template_id),
-        )
-        best_template, best_match = matches[0]
-        runner_up_score = 0 if len(matches) == 1 else matches[1][1].confidence
-        accepted = (
-            best_match.accepted
-            and best_match.confidence - runner_up_score
-            >= self._minimum_template_margin
-        )
+                if route_template.waypoint_id is not None
+                and route_template.waypoint_id not in allowed
+            )
+            excluded_decision = self._best_match(frame, excluded_templates)
+            if excluded_decision is not None and excluded_decision[2]:
+                excluded_template, excluded_match, _ = excluded_decision
+                return WaypointObservation(
+                    frame_sequence=frame.sequence,
+                    captured_at_ns=frame.captured_at_ns,
+                    confidence=excluded_match.confidence,
+                    centroid=None,
+                    waypoint_id=None,
+                    out_of_scope_waypoint_id=excluded_template.waypoint_id,
+                    scope_violation=True,
+                )
+
+        confidence = 0 if decision is None else decision[1].confidence
         return WaypointObservation(
             frame_sequence=frame.sequence,
             captured_at_ns=frame.captured_at_ns,
-            confidence=best_match.confidence,
-            centroid=best_template.route_position if accepted else None,
-            waypoint_id=best_template.waypoint_id if accepted else None,
+            confidence=confidence,
+            centroid=None,
+            waypoint_id=None,
         )

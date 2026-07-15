@@ -205,6 +205,7 @@ def test_evaluate_template_profile_reports_blind_metrics_and_predictions(
     assert len(metrics["dataset_frame_manifest_sha256"]) == 64
     assert len(metrics["dataset_content_sha256"]) == 64
     assert metrics["split"] == "blind"
+    assert metrics["observation_scope"] == "unconstrained_perception"
     assert metrics["sample_count"] == 3
     assert metrics["locatable_count"] == 2
     assert metrics["unlocatable_count"] == 1

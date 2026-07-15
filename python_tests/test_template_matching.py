@@ -6,10 +6,12 @@ import pytest
 
 from delta_vision.config import CaptureRegion
 from delta_vision.frames import CapturedFrame
+from delta_vision.navigation import ObservationScope
 from delta_vision.template_matching import (
     MatchDecisionPolicy,
     RouteTemplate,
     TemplateAnchorDetector,
+    TemplateMatchObservation,
     TemplateWaypointObserver,
 )
 
@@ -293,12 +295,210 @@ def test_template_waypoint_observer_maps_screen_match_to_route_position() -> Non
         minimum_template_margin=0.05,
     )
 
-    observation = observer.observe(_captured_frame(frame))
+    observation = observer.observe(
+        _captured_frame(frame),
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
 
     assert observation.frame_sequence == 7
     assert observation.confidence == pytest.approx(1.0, abs=1e-6)
     assert observation.centroid == (200.0, 10.0)
     assert observation.waypoint_id == "turn"
+
+
+def test_template_waypoint_observer_applies_scope_before_margin_without_state() -> None:
+    class CountingDetector:
+        def __init__(self, confidence: float) -> None:
+            self.confidence = confidence
+            self.calls = 0
+
+        def detect(self, image: np.ndarray) -> TemplateMatchObservation:
+            del image
+            self.calls += 1
+            accepted = self.confidence >= 0.8
+            return TemplateMatchObservation(
+                label="counting",
+                confidence=self.confidence,
+                runner_up_confidence=0,
+                bbox=(0, 0, 1, 1) if accepted else None,
+                centroid=(0.5, 0.5) if accepted else None,
+                scale=1 if accepted else None,
+                candidate_bbox=(0, 0, 1, 1),
+                candidate_centroid=(0.5, 0.5),
+                candidate_scale=1,
+                accepted=accepted,
+                reason="accepted" if accepted else "below_threshold",
+            )
+
+    current = CountingDetector(1)
+    next_detector = CountingDetector(0.1)
+    distant = CountingDetector(1)
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("current", current, (0.0, 0.0), "A"),
+            RouteTemplate("next", next_detector, (100.0, 0.0), "B"),
+            RouteTemplate("distant", distant, (300.0, 0.0), "D"),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+    frame = _captured_frame(np.zeros((120, 180, 3), dtype=np.uint8))
+
+    first_global = observer.observe(
+        frame,
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
+    constrained_observation = observer.observe(
+        frame,
+        scope=ObservationScope(allowed_waypoint_ids=frozenset({"A", "B"})),
+    )
+    second_global = observer.observe(
+        frame,
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
+
+    assert first_global.centroid is None
+    assert constrained_observation.waypoint_id == "A"
+    assert constrained_observation.centroid == (0.0, 0.0)
+    assert second_global.centroid is None
+    assert distant.calls == 2
+
+
+def test_template_waypoint_observer_excludes_unassigned_template_in_route_scope() -> None:
+    template = _template()
+    frame = np.zeros((120, 180, 3), dtype=np.uint8)
+    frame[35:47, 60:76] = template
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("between", _detector(template), (50.0, 0.0), None),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+
+    observation = observer.observe(
+        _captured_frame(frame),
+        scope=ObservationScope(allowed_waypoint_ids=frozenset({"A", "B"})),
+    )
+
+    assert observation.confidence == 0
+    assert observation.centroid is None
+    assert observation.waypoint_id is None
+
+
+def test_template_waypoint_observer_excludes_unassigned_template_in_global_scope() -> None:
+    class MarkerDetector:
+        def __init__(self, confidence: float) -> None:
+            self.confidence = confidence
+            self.calls = 0
+
+        def detect(self, image: np.ndarray) -> TemplateMatchObservation:
+            del image
+            self.calls += 1
+            return TemplateMatchObservation(
+                label="marker",
+                confidence=self.confidence,
+                runner_up_confidence=0,
+                bbox=(0, 0, 1, 1),
+                centroid=(0.5, 0.5),
+                scale=1,
+                candidate_bbox=(0, 0, 1, 1),
+                candidate_centroid=(0.5, 0.5),
+                candidate_scale=1,
+                accepted=True,
+                reason="accepted",
+            )
+
+    known_detector = MarkerDetector(0.9)
+    unassigned_detector = MarkerDetector(1.0)
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("known", known_detector, (10.0, 0.0), "A"),
+            RouteTemplate("unassigned", unassigned_detector, (50.0, 0.0), None),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+
+    observation = observer.observe(
+        _captured_frame(np.zeros((120, 180, 3), dtype=np.uint8)),
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
+
+    assert observation.waypoint_id == "A"
+    assert observation.centroid == (10.0, 0.0)
+    assert known_detector.calls == 1
+    assert unassigned_detector.calls == 0
+
+
+def test_template_waypoint_observer_groups_margin_by_waypoint() -> None:
+    class FixedDetector:
+        def __init__(self, confidence: float, *, accepted: bool | None = None) -> None:
+            self.confidence = confidence
+            self.accepted = confidence >= 0.8 if accepted is None else accepted
+
+        def detect(self, image: np.ndarray) -> TemplateMatchObservation:
+            del image
+            return TemplateMatchObservation(
+                label="fixed",
+                confidence=self.confidence,
+                runner_up_confidence=0,
+                bbox=(0, 0, 1, 1) if self.accepted else None,
+                centroid=(0.5, 0.5) if self.accepted else None,
+                scale=1 if self.accepted else None,
+                candidate_bbox=(0, 0, 1, 1),
+                candidate_centroid=(0.5, 0.5),
+                candidate_scale=1,
+                accepted=self.accepted,
+                reason="accepted" if self.accepted else "ambiguous",
+            )
+
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("current", FixedDetector(0.1), (0.0, 0.0), "A"),
+            RouteTemplate("next", FixedDetector(0.1), (10.0, 0.0), "B"),
+            RouteTemplate("off-route-1", FixedDetector(1.0), (50.0, 0.0), "C"),
+            RouteTemplate("off-route-2", FixedDetector(1.0), (50.0, 0.0), "C"),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+
+    observation = observer.observe(
+        _captured_frame(np.zeros((120, 180, 3), dtype=np.uint8)),
+        scope=ObservationScope(allowed_waypoint_ids=frozenset({"A", "B"})),
+    )
+
+    assert observation.scope_violation is True
+    assert observation.out_of_scope_waypoint_id == "C"
+
+    mixed_observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("current", FixedDetector(0.1), (0.0, 0.0), "A"),
+            RouteTemplate(
+                "off-route-rejected",
+                FixedDetector(0.95, accepted=False),
+                (50.0, 0.0),
+                "C",
+            ),
+            RouteTemplate(
+                "off-route-accepted",
+                FixedDetector(0.9, accepted=True),
+                (50.0, 0.0),
+                "C",
+            ),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+
+    mixed_observation = mixed_observer.observe(
+        _captured_frame(np.zeros((120, 180, 3), dtype=np.uint8)),
+        scope=ObservationScope(allowed_waypoint_ids=frozenset({"A"})),
+    )
+
+    assert mixed_observation.scope_violation is True
+    assert mixed_observation.out_of_scope_waypoint_id == "C"
 
 
 def test_template_waypoint_observer_rejects_cross_template_ambiguity() -> None:
@@ -314,7 +514,10 @@ def test_template_waypoint_observer_rejects_cross_template_ambiguity() -> None:
         minimum_template_margin=0.05,
     )
 
-    observation = observer.observe(_captured_frame(frame))
+    observation = observer.observe(
+        _captured_frame(frame),
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
 
     assert observation.confidence == pytest.approx(1.0, abs=1e-6)
     assert observation.centroid is None
@@ -332,7 +535,8 @@ def test_template_waypoint_observer_rejects_frame_profile_mismatch() -> None:
     )
 
     observation = observer.observe(
-        _captured_frame(np.zeros((100, 160, 3), dtype=np.uint8))
+        _captured_frame(np.zeros((100, 160, 3), dtype=np.uint8)),
+        scope=ObservationScope(allowed_waypoint_ids=None),
     )
 
     assert observation.confidence == 0

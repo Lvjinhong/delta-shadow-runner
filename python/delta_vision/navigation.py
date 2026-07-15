@@ -54,10 +54,32 @@ class WaypointObservation:
     confidence: float
     centroid: tuple[float, float] | None
     waypoint_id: str | None
+    out_of_scope_waypoint_id: str | None = None
+    scope_violation: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationScope:
+    """显式声明本帧允许全局定位，或仅在给定路线节点内定位。"""
+
+    allowed_waypoint_ids: frozenset[str] | None
+
+    def __post_init__(self) -> None:
+        allowed = self.allowed_waypoint_ids
+        if allowed is not None and (
+            not isinstance(allowed, frozenset)
+            or any(not isinstance(node_id, str) or not node_id for node_id in allowed)
+        ):
+            raise ValueError("观察范围必须是 null 或仅含有效节点 ID 的 frozenset")
 
 
 class WaypointObservationSource(Protocol):
-    def observe(self, frame: CapturedFrame) -> WaypointObservation: ...
+    def observe(
+        self,
+        frame: CapturedFrame,
+        *,
+        scope: ObservationScope,
+    ) -> WaypointObservation: ...
 
 
 class WaypointObserver:
@@ -82,30 +104,116 @@ class WaypointObserver:
     def detector(self) -> AnchorDetector:
         return self._detector
 
-    def observe(self, frame: CapturedFrame) -> WaypointObservation:
+    @staticmethod
+    def _distance_to_segment(
+        point: tuple[float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> float:
+        delta_x = end[0] - start[0]
+        delta_y = end[1] - start[1]
+        squared_length = delta_x * delta_x + delta_y * delta_y
+        if squared_length <= 1e-12:
+            return math.dist(point, start)
+        projection = (
+            (point[0] - start[0]) * delta_x
+            + (point[1] - start[1]) * delta_y
+        ) / squared_length
+        bounded = max(0.0, min(1.0, projection))
+        nearest = (start[0] + bounded * delta_x, start[1] + bounded * delta_y)
+        return math.dist(point, nearest)
+
+    def _distance_to_scope(
+        self,
+        centroid: tuple[float, float],
+        waypoint_positions: Mapping[str, tuple[float, float]],
+    ) -> float:
+        points = tuple(waypoint_positions.values())
+        if len(points) == 1:
+            return math.dist(centroid, points[0])
+        return min(
+            self._distance_to_segment(centroid, start, end)
+            for index, start in enumerate(points)
+            for end in points[index + 1 :]
+        )
+
+    def observe(
+        self,
+        frame: CapturedFrame,
+        *,
+        scope: ObservationScope,
+    ) -> WaypointObservation:
         detected = self._detector.detect(frame.image)
         centroid = detected.centroid
         waypoint_id = None
+        out_of_scope_waypoint_id = None
+        scope_violation = False
         if centroid is not None:
-            distances = sorted(
+            allowed = scope.allowed_waypoint_ids
+            global_distances = sorted(
                 (
                     math.hypot(centroid[0] - point[0], centroid[1] - point[1]),
                     node_id,
                 )
                 for node_id, point in self._waypoint_positions.items()
             )
-            nearest_distance, nearest_id = distances[0]
-            tied = len(distances) > 1 and math.isclose(
-                nearest_distance, distances[1][0], rel_tol=0, abs_tol=1e-9
+            global_nearest_distance, global_nearest_id = global_distances[0]
+            global_tied = len(global_distances) > 1 and math.isclose(
+                global_nearest_distance,
+                global_distances[1][0],
+                rel_tol=0,
+                abs_tol=1e-9,
             )
-            if nearest_distance <= self._localization_radius and not tied:
-                waypoint_id = nearest_id
+            global_waypoint_id = (
+                global_nearest_id
+                if global_nearest_distance <= self._localization_radius
+                and not global_tied
+                else None
+            )
+            waypoint_positions = (
+                self._waypoint_positions
+                if allowed is None
+                else {
+                    node_id: point
+                    for node_id, point in self._waypoint_positions.items()
+                    if node_id in allowed
+                }
+            )
+            if not waypoint_positions:
+                centroid = None
+                scope_violation = True
+            elif global_waypoint_id is not None and (
+                allowed is not None and global_waypoint_id not in allowed
+            ):
+                out_of_scope_waypoint_id = global_waypoint_id
+                scope_violation = True
+            elif allowed is not None and (
+                self._distance_to_scope(centroid, waypoint_positions)
+                > self._localization_radius
+            ):
+                scope_violation = True
+            else:
+                distances = sorted(
+                    (
+                        math.hypot(centroid[0] - point[0], centroid[1] - point[1]),
+                        node_id,
+                    )
+                    for node_id, point in waypoint_positions.items()
+                )
+                nearest_distance, nearest_id = distances[0]
+                tied = len(distances) > 1 and math.isclose(
+                    nearest_distance, distances[1][0], rel_tol=0, abs_tol=1e-9
+                )
+                if nearest_distance <= self._localization_radius and not tied:
+                    waypoint_id = nearest_id
         return WaypointObservation(
             frame_sequence=frame.sequence,
             captured_at_ns=frame.captured_at_ns,
             confidence=detected.confidence,
             centroid=centroid,
             waypoint_id=waypoint_id,
+            out_of_scope_waypoint_id=out_of_scope_waypoint_id,
+            scope_violation=scope_violation,
         )
 
 
@@ -228,6 +336,19 @@ class VisualNavigationController:
         if next_index >= len(self._route):
             return None
         return self._route[next_index]
+
+    def _observation_scope(self) -> ObservationScope:
+        current_node_id = self._current_node_id()
+        if current_node_id is None:
+            return ObservationScope(allowed_waypoint_ids=None)
+        next_node_id = self._next_node_id()
+        return ObservationScope(
+            allowed_waypoint_ids=frozenset(
+                node_id
+                for node_id in (current_node_id, next_node_id)
+                if node_id is not None
+            )
+        )
 
     def _snapshot(self) -> NavigationSnapshot:
         return NavigationSnapshot(
@@ -373,7 +494,20 @@ class VisualNavigationController:
         self._last_frame_sequence = frame.sequence
         self._last_captured_at_ns = frame.captured_at_ns
 
-        observation = self._observer.observe(frame)
+        observation = self._observer.observe(
+            frame,
+            scope=self._observation_scope(),
+        )
+        if observation.scope_violation or observation.out_of_scope_waypoint_id is not None:
+            detail = (
+                f'的非相邻 waypoint: "{observation.out_of_scope_waypoint_id}"'
+                if observation.out_of_scope_waypoint_id is not None
+                else ""
+            )
+            return self._stop_internal(
+                now_ns=now_ns,
+                reason=f"视觉定位跳到了观察范围外{detail}",
+            )
         if observation.centroid is None:
             self._arrival_confirmations = 0
             return self._enter_localizing(now_ns=now_ns, reason="视觉锚点低置信或缺失")

@@ -2,16 +2,24 @@ import numpy as np
 import pytest
 
 from delta_vision.actuator import DryRunActuator
+from delta_vision.config import CaptureRegion
 from delta_vision.frames import CapturedFrame
 from delta_vision.navigation import (
     NavigationPolicy,
     NavigationStatus,
+    ObservationScope,
     RouteAction,
     VisualNavigationController,
     WaypointObserver,
 )
 from delta_vision.perception import ColorAnchorDetector
 from delta_vision.planner import RouteEdge, RouteNode
+from delta_vision.template_matching import (
+    MatchDecisionPolicy,
+    RouteTemplate,
+    TemplateAnchorDetector,
+    TemplateWaypointObserver,
+)
 
 
 def _graph() -> dict[str, RouteNode]:
@@ -80,14 +88,15 @@ def _controller(**policy_overrides):
 
 def test_waypoint_observer_localizes_only_unique_nearby_anchor() -> None:
     observer = _observer()
+    global_scope = ObservationScope(allowed_waypoint_ids=None)
 
-    accepted = observer.observe(_frame(0, 10, 80))
+    accepted = observer.observe(_frame(0, 10, 80), scope=global_scope)
     between = WaypointObserver(
         detector=_observer().detector,
         waypoint_positions={"left": (40, 50), "right": (60, 50)},
         localization_radius=11,
-    ).observe(_frame(1, 50, 50))
-    missing = observer.observe(_frame(2, None, None))
+    ).observe(_frame(1, 50, 50), scope=global_scope)
+    missing = observer.observe(_frame(2, None, None), scope=global_scope)
 
     assert accepted.waypoint_id == "A"
     assert accepted.centroid == (10.0, 80.0)
@@ -110,6 +119,21 @@ def test_waypoint_observer_rejects_invalid_topology() -> None:
             waypoint_positions={"A": (1, 1)},
             localization_radius=0,
         )
+
+
+def test_observation_scope_is_immutable_and_empty_scope_fails_closed() -> None:
+    with pytest.raises(ValueError, match="frozenset"):
+        ObservationScope(allowed_waypoint_ids={"A"})
+    with pytest.raises(ValueError, match="节点 ID"):
+        ObservationScope(allowed_waypoint_ids=frozenset({""}))
+
+    observation = _observer().observe(
+        _frame(0, 10, 80),
+        scope=ObservationScope(allowed_waypoint_ids=frozenset()),
+    )
+
+    assert observation.centroid is None
+    assert observation.waypoint_id is None
 
 
 def test_controller_uses_weighted_astar_edge_action() -> None:
@@ -321,7 +345,7 @@ def test_goal_requires_consecutive_visual_confirmations_and_releases() -> None:
     assert len(actuator.events) == event_count
 
 
-def test_unmapped_high_confidence_frame_after_goal_confirmation_does_not_advance_route() -> None:
+def test_unmapped_high_confidence_frame_after_goal_confirmation_stops_safely() -> None:
     controller, actuator = _controller()
     controller.on_frame(_frame(0, 10, 80), now_ns=0)
     controller.on_frame(_frame(1, 10, 10), now_ns=100_000_000)
@@ -330,10 +354,22 @@ def test_unmapped_high_confidence_frame_after_goal_confirmation_does_not_advance
     unmapped = controller.on_frame(_frame(3, 50, 50), now_ns=250_000_000)
 
     assert first.status is NavigationStatus.NAVIGATING
-    assert unmapped.status is NavigationStatus.NAVIGATING
+    assert unmapped.status is NavigationStatus.STOPPED
     assert unmapped.current_node_id == "D"
     assert unmapped.next_node_id is None
     assert actuator.pressed_keys == frozenset()
+
+
+def test_unmapped_high_confidence_frame_outside_active_edge_stops_and_releases() -> None:
+    controller, actuator = _controller()
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+
+    snapshot = controller.on_frame(_frame(1, 50, 50), now_ns=50_000_000)
+
+    assert snapshot.status is NavigationStatus.STOPPED
+    assert "观察范围外" in (snapshot.reason or "")
+    assert actuator.pressed_keys == frozenset()
+    assert [event.kind for event in actuator.events] == ["key_down", "key_up"]
 
 
 def test_stale_frame_and_manual_stop_are_terminal_and_release_keys() -> None:
@@ -417,6 +453,110 @@ def test_non_adjacent_visual_jump_stops_and_releases() -> None:
 
     assert snapshot.status is NavigationStatus.STOPPED
     assert "非相邻" in (snapshot.reason or "")
+    assert actuator.pressed_keys == frozenset()
+
+
+def test_template_navigation_uses_current_and_next_waypoints_as_match_candidates() -> None:
+    current_template = np.random.default_rng(20260716).integers(
+        0, 256, size=(12, 16, 3), dtype=np.uint8
+    )
+    distant_template = np.array(current_template, copy=True)
+    distant_template[0, 0] = 255 - distant_template[0, 0]
+    next_template = np.random.default_rng(99).integers(
+        0, 256, size=current_template.shape, dtype=np.uint8
+    )
+    off_route_template = np.random.default_rng(1234).integers(
+        0, 256, size=current_template.shape, dtype=np.uint8
+    )
+
+    def detector(template: np.ndarray) -> TemplateAnchorDetector:
+        return TemplateAnchorDetector(
+            label="route",
+            template=template,
+            search_roi=CaptureRegion(0, 0, 100, 100),
+            scales=(1.0,),
+            policy=MatchDecisionPolicy(score_threshold=0.8, minimum_margin=0.05),
+            nms_radius_px=18,
+        )
+
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("current", detector(current_template), (10, 80), "A"),
+            RouteTemplate("next", detector(next_template), (10, 10), "B"),
+            RouteTemplate("distant", detector(distant_template), (80, 10), "D"),
+            RouteTemplate("off-route", detector(off_route_template), (80, 80), "C"),
+            RouteTemplate(
+                "off-route-second-view",
+                detector(off_route_template),
+                (80, 80),
+                "C",
+            ),
+        ),
+        expected_frame_size=(100, 100),
+        minimum_template_margin=0,
+    )
+    actuator = DryRunActuator(allowed_keys={"w", "d"}, max_key_hold_ms=150)
+    controller = VisualNavigationController(
+        graph={
+            "A": RouteNode(10, 80, (RouteEdge("B", 1),)),
+            "B": RouteNode(10, 10, (RouteEdge("D", 1),)),
+            "C": RouteNode(80, 80, (RouteEdge("D", 1),)),
+            "D": RouteNode(80, 10, ()),
+        },
+        observer=observer,
+        actuator=actuator,
+        goal_node_id="D",
+        policy=NavigationPolicy(
+            edge_actions={
+                ("A", "B"): "w",
+                ("B", "D"): "d",
+            },
+            pulse_ms=100,
+            min_progress_px=3,
+            stuck_after_ms=300,
+            localization_timeout_ms=200,
+            max_recovery_attempts=0,
+            recovery_keys=(),
+            arrival_confirmations=2,
+        ),
+    )
+
+    first_image = np.zeros((100, 100, 3), dtype=np.uint8)
+    first_image[40:52, 42:58] = current_template
+    first_image.setflags(write=False)
+    controller.on_frame(CapturedFrame(0, 1, first_image, "fixture"), now_ns=0)
+
+    missing_image = np.zeros((100, 100, 3), dtype=np.uint8)
+    missing_image.setflags(write=False)
+    localizing = controller.on_frame(
+        CapturedFrame(1, 2, missing_image, "fixture"),
+        now_ns=50_000_000,
+    )
+
+    second_image = np.zeros((100, 100, 3), dtype=np.uint8)
+    second_image[40:52, 42:58] = distant_template
+    second_image.setflags(write=False)
+    snapshot = controller.on_frame(
+        CapturedFrame(2, 3, second_image, "fixture"),
+        now_ns=100_000_000,
+    )
+
+    assert localizing.status is NavigationStatus.LOCALIZING
+    assert snapshot.status is NavigationStatus.NAVIGATING
+    assert snapshot.current_node_id == "A"
+    assert snapshot.next_node_id == "B"
+    assert actuator.pressed_keys == frozenset({"w"})
+
+    off_route_image = np.zeros((100, 100, 3), dtype=np.uint8)
+    off_route_image[40:52, 42:58] = off_route_template
+    off_route_image.setflags(write=False)
+    stopped = controller.on_frame(
+        CapturedFrame(3, 4, off_route_image, "fixture"),
+        now_ns=150_000_000,
+    )
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "C" in (stopped.reason or "")
     assert actuator.pressed_keys == frozenset()
 
 
