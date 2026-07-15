@@ -172,7 +172,7 @@ Worker 退出码：
     "minimum_area": 200,
     "confidence_threshold": 0.9
   },
-  "localization_radius": 32
+  "localization_radius": 18
 }
 ```
 
@@ -244,7 +244,7 @@ artifacts/runs/YYYYMMDD-HHMMSS/
 
 `manifest.jsonl` 保存 sequence、单调时间戳、来源、宽高和当帧导航/动作元数据。`ReplayFrameSource` 会拒绝时间倒退、路径逃逸、损坏图像和清单分辨率不一致。
 
-不要让 Worker 读取 `target-ground-truth.jsonl`。它只供独立评估器在运行结束后核对真实到达状态。
+不要让 Worker 读取 `target-ground-truth.jsonl`。它只供启动脚本和独立评估器在 Worker 结束后核对真实到达状态；视觉状态与 ground truth 任一未到达，受控 E2E 都会失败。
 
 ## 6. 开发与测试
 
