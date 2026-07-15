@@ -75,6 +75,16 @@ def test_dry_run_actuator_key_up_and_repeated_release_are_idempotent() -> None:
     assert actuator.events[-1].reason == "正常释放"
 
 
+def test_dry_run_actuator_keeps_event_time_monotonic_after_late_release() -> None:
+    actuator = DryRunActuator(allowed_keys={"w", "d"}, max_key_hold_ms=250)
+    actuator.key_down("w", now_ns=0)
+    actuator.key_up("w", now_ns=300_000_000)
+
+    actuator.key_down("d", now_ns=50_000_000)
+
+    assert [event.at_ns for event in actuator.events] == [0, 300_000_000, 300_000_000]
+
+
 @pytest.mark.parametrize(
     ("allowed_keys", "max_key_hold_ms", "message"),
     [(set(), 250, "允许按键集合"), ({"w"}, 0, "最大按键时长")],

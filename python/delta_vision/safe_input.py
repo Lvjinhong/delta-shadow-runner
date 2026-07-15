@@ -123,6 +123,7 @@ class Win32InputActuator:
         self._watchdog_timers: dict[str, tuple[object, TimerHandle]] = {}
         self._watchdog_error: InputInjectionError | None = None
         self._events: list[InputEvent] = []
+        self._last_event_at_ns = -1
 
     @property
     def pressed_keys(self) -> frozenset[str]:
@@ -139,6 +140,13 @@ class Win32InputActuator:
             return self._scan_codes[key]
         except KeyError as error:
             raise ValueError(f'不允许的按键: "{key}"') from error
+
+    def _next_event_time_locked(self, now_ns: int) -> int:
+        if type(now_ns) is not int or now_ns < 0:
+            raise ValueError("动作时间戳必须是非负整数")
+        effective_now_ns = max(now_ns, self._last_event_at_ns)
+        self._last_event_at_ns = effective_now_ns
+        return effective_now_ns
 
     @staticmethod
     def _require_inserted(inserted_count: int) -> None:
@@ -215,9 +223,10 @@ class Win32InputActuator:
             )
             self._require_inserted(self._gateway.send_key(scan_code, key_up=False))
             with self._state_lock:
-                self._pressed_at[key] = (now_ns, token)
+                effective_now_ns = self._next_event_time_locked(now_ns)
+                self._pressed_at[key] = (effective_now_ns, token)
                 self._watchdog_timers[key] = (token, timer)
-                self._events.append(InputEvent("key_down", now_ns, key=key))
+                self._events.append(InputEvent("key_down", effective_now_ns, key=key))
             try:
                 timer.start()
             except Exception as error:
@@ -267,7 +276,10 @@ class Win32InputActuator:
                 if timer_entry is not None and timer_entry[0] is token:
                     del self._watchdog_timers[key]
                     timer = timer_entry[1]
-                self._events.append(InputEvent("key_up", now_ns, key=key, reason=reason))
+                effective_now_ns = self._next_event_time_locked(now_ns)
+                self._events.append(
+                    InputEvent("key_up", effective_now_ns, key=key, reason=reason)
+                )
             if timer is not None:
                 timer.cancel()
             return True
@@ -276,7 +288,10 @@ class Win32InputActuator:
         self._check_new_action(now_ns=now_ns)
         self._require_inserted(self._gateway.send_mouse_relative(dx, dy))
         with self._state_lock:
-            self._events.append(InputEvent("mouse_move", now_ns, dx=dx, dy=dy))
+            effective_now_ns = self._next_event_time_locked(now_ns)
+            self._events.append(
+                InputEvent("mouse_move", effective_now_ns, dx=dx, dy=dy)
+            )
 
     def release_all(self, *, now_ns: int, reason: str) -> None:
         with self._state_lock:

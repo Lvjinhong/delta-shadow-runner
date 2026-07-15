@@ -29,6 +29,7 @@ class DryRunActuator:
         self._max_key_hold_ns = max_key_hold_ms * 1_000_000
         self._pressed_at: dict[str, int] = {}
         self._events: list[ActionEvent] = []
+        self._last_event_at_ns = -1
 
     @property
     def pressed_keys(self) -> frozenset[str]:
@@ -42,28 +43,40 @@ class DryRunActuator:
         if key not in self._allowed_keys:
             raise ValueError(f'不允许的按键: "{key}"')
 
+    def _next_event_time(self, now_ns: int) -> int:
+        if type(now_ns) is not int or now_ns < 0:
+            raise ValueError("动作时间戳必须是非负整数")
+        effective_now_ns = max(now_ns, self._last_event_at_ns)
+        self._last_event_at_ns = effective_now_ns
+        return effective_now_ns
+
     def key_down(self, key: str, *, now_ns: int) -> None:
         self._require_allowed(key)
         if key in self._pressed_at:
             return
-        self._pressed_at[key] = now_ns
-        self._events.append(ActionEvent("key_down", key, now_ns, dry_run=True))
+        effective_now_ns = self._next_event_time(now_ns)
+        self._pressed_at[key] = effective_now_ns
+        self._events.append(ActionEvent("key_down", key, effective_now_ns, dry_run=True))
 
     def key_up(self, key: str, *, now_ns: int, reason: str | None = None) -> None:
         self._require_allowed(key)
         if key not in self._pressed_at:
             return
         del self._pressed_at[key]
-        self._events.append(ActionEvent("key_up", key, now_ns, dry_run=True, reason=reason))
+        effective_now_ns = self._next_event_time(now_ns)
+        self._events.append(
+            ActionEvent("key_up", key, effective_now_ns, dry_run=True, reason=reason)
+        )
 
     def move_mouse_relative(self, dx: int, dy: int, *, now_ns: int) -> None:
         if type(dx) is not int or type(dy) is not int:
             raise ValueError("相对鼠标位移必须是整数")
+        effective_now_ns = self._next_event_time(now_ns)
         self._events.append(
             ActionEvent(
                 "mouse_move",
                 None,
-                now_ns,
+                effective_now_ns,
                 dry_run=True,
                 dx=dx,
                 dy=dy,

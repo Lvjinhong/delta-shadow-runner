@@ -100,6 +100,17 @@ def test_win32_actuator_sends_scan_code_and_tracks_pressed_key() -> None:
     assert actuator.events[-1].reason == "到达节点"
 
 
+def test_win32_actuator_keeps_event_time_monotonic_after_watchdog_race() -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway)
+    actuator.key_down("w", now_ns=0)
+    actuator.key_up("w", now_ns=300_000_000)
+
+    actuator.key_down("d", now_ns=50_000_000)
+
+    assert [event.at_ns for event in actuator.events] == [0, 300_000_000, 300_000_000]
+
+
 def test_win32_actuator_rejects_wrong_foreground_without_sending_input() -> None:
     gateway = FakeGateway()
     gateway.title = "Other Window"

@@ -355,7 +355,20 @@ def test_control_loop_reaches_goal_from_screenshot_frames_and_records_replay(
             _frame(3, 700, 80),
         ]
     )
-    clock = iter([0, 0, 100_000_000, 200_000_000, 250_000_000, 300_000_000])
+    clock = iter(
+        [
+            0,
+            0,
+            0,
+            100_000_000,
+            100_000_000,
+            200_000_000,
+            200_000_000,
+            250_000_000,
+            250_000_000,
+            300_000_000,
+        ]
+    )
 
     result = run_control_loop(
         source=source,
@@ -403,7 +416,20 @@ def test_control_loop_records_mouse_and_key_events_in_replay_and_event_log(
             _template_frame(2, goal_image),
         ]
     )
-    clock = iter([0, 0, 100_000_000, 200_000_000, 250_000_000, 300_000_000])
+    clock = iter(
+        [
+            0,
+            0,
+            0,
+            100_000_000,
+            100_000_000,
+            200_000_000,
+            200_000_000,
+            250_000_000,
+            250_000_000,
+            300_000_000,
+        ]
+    )
 
     result = run_control_loop(
         source=source,
@@ -451,7 +477,7 @@ def test_control_loop_persists_terminal_input_without_a_following_frame(tmp_path
     )
     controller = build_navigation_controller(settings, actuator=actuator)
     source = FakeFrameSource([_frame(0, 80, 520), None])
-    clock = iter([0, 0, 100_000_000, 200_000_000, 300_000_000])
+    clock = iter([0, 0, 0, 100_000_000, 100_000_000, 200_000_000, 300_000_000])
 
     result = run_control_loop(
         source=source,
@@ -467,6 +493,75 @@ def test_control_loop_persists_terminal_input_without_a_following_frame(tmp_path
 
     assert result.status is NavigationStatus.STOPPED
     assert _replay_input_kinds(tmp_path / "replay") == ["key_down", "key_up"]
+
+
+def test_control_loop_refreshes_action_time_after_slow_capture_watchdog_release(
+    tmp_path,
+) -> None:
+    settings = load_worker_settings(CONFIG_PATH)
+    actuator = DryRunActuator(
+        allowed_keys={"w", "a", "s", "d"},
+        max_key_hold_ms=250,
+    )
+    controller = build_navigation_controller(settings, actuator=actuator)
+
+    class SlowFrameSource(FakeFrameSource):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    _frame(0, 80, 520),
+                    _frame(1, 80, 80),
+                    _frame(2, 700, 80),
+                    _frame(3, 700, 80),
+                ]
+            )
+            self.grab_count = 0
+
+        def grab(self):
+            if self.grab_count == 1:
+                # 模拟截图阻塞期间 Win32 watchdog 使用真实较晚时钟释放旧按键。
+                actuator.expire_overdue(now_ns=300_000_000)
+            self.grab_count += 1
+            return super().grab()
+
+    source = SlowFrameSource()
+    clock = iter(
+        [
+            0,
+            0,
+            10_000_000,
+            50_000_000,
+            350_000_000,
+            400_000_000,
+            410_000_000,
+            450_000_000,
+            460_000_000,
+            500_000_000,
+        ]
+    )
+
+    result = run_control_loop(
+        source=source,
+        controller=controller,
+        actuator=actuator,
+        recorder=FrameRecorder(tmp_path / "replay"),
+        event_writer=JsonlEventWriter(tmp_path / "events.jsonl"),
+        clock_ns=lambda: next(clock),
+        sleep_fn=lambda _: None,
+        loop_interval_ms=20,
+        max_duration_seconds=15,
+    )
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "replay" / "input-events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert result.status is NavigationStatus.ARRIVED
+    assert [record["at_ns"] for record in records] == sorted(
+        record["at_ns"] for record in records
+    )
 
 
 def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None:
@@ -494,7 +589,20 @@ def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None
             _frame(3, 700, 80),
         ]
     )
-    clock = iter([0, 0, 100_000_000, 200_000_000, 250_000_000, 300_000_000])
+    clock = iter(
+        [
+            0,
+            0,
+            0,
+            100_000_000,
+            100_000_000,
+            200_000_000,
+            200_000_000,
+            250_000_000,
+            250_000_000,
+            300_000_000,
+        ]
+    )
 
     result = run_control_loop(
         source=source,
@@ -509,7 +617,16 @@ def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None
     )
 
     assert result.status is NavigationStatus.ARRIVED
-    assert actuator.expiry_checks == [0, 100_000_000, 200_000_000, 250_000_000]
+    assert actuator.expiry_checks == [
+        0,
+        0,
+        100_000_000,
+        100_000_000,
+        200_000_000,
+        200_000_000,
+        250_000_000,
+        250_000_000,
+    ]
 
 
 def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path) -> None:
@@ -527,7 +644,7 @@ def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path)
             return _frame(0, 80, 520)
 
     source = FailingSource([])
-    clock = iter([0, 0, 10_000_000, 20_000_000])
+    clock = iter([0, 0, 0, 10_000_000, 20_000_000])
 
     with pytest.raises(RuntimeError, match="capture failed"):
         run_control_loop(

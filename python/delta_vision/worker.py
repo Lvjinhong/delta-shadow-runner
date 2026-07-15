@@ -515,7 +515,12 @@ def run_control_loop(
             else:
                 actuator.expire_overdue(now_ns=now_ns)
                 frame = source.grab()
-                if frame is None:
+                # 截图可能阻塞；决策必须使用截图完成后的时钟，避免落后于 watchdog。
+                now_ns = clock_ns()
+                actuator.expire_overdue(now_ns=now_ns)
+                if now_ns - started_at_ns >= max_duration_seconds * 1_000_000_000:
+                    snapshot = controller.stop(now_ns=now_ns, reason="Worker 运行超时")
+                elif frame is None:
                     snapshot = controller.on_timer(now_ns=now_ns)
                 else:
                     snapshot = controller.on_frame(frame, now_ns=now_ns)
