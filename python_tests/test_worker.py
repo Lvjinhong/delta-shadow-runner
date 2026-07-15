@@ -1,6 +1,8 @@
+import hashlib
 import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -27,6 +29,106 @@ def _frame(sequence: int, x: int, y: int) -> CapturedFrame:
     return CapturedFrame(sequence, 1_000 + sequence, image, "fixture")
 
 
+def _write_template_image(path: Path, seed: int) -> tuple[np.ndarray, str]:
+    image = np.random.default_rng(seed).integers(
+        0, 256, size=(12, 16, 3), dtype=np.uint8
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    assert cv2.imwrite(str(path), image)
+    return image, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_template_worker_fixture(
+    tmp_path: Path,
+) -> tuple[Path, np.ndarray, np.ndarray]:
+    config_root = tmp_path / "configs"
+    profile_root = config_root / "route-01"
+    start_image, start_hash = _write_template_image(
+        profile_root / "start.png", 11
+    )
+    goal_image, goal_hash = _write_template_image(profile_root / "goal.png", 12)
+    profile = {
+        "schema_version": 1,
+        "capture_profile": {"width": 180, "height": 120},
+        "matcher": {
+            "scales": [1.0],
+            "score_threshold": 0.8,
+            "minimum_spatial_margin": 0.05,
+            "minimum_template_margin": 0.05,
+            "nms_radius_px": 18,
+        },
+        "rois": {
+            "scene": {"left": 0, "top": 0, "width": 180, "height": 120}
+        },
+        "templates": [
+            {
+                "id": "start-template",
+                "image": "start.png",
+                "sha256": start_hash,
+                "roi_id": "scene",
+                "route_position": [0, 0],
+                "waypoint_id": "start",
+                "source_run_id": "calibration-run-01",
+                "source_sequence": 10,
+            },
+            {
+                "id": "goal-template",
+                "image": "goal.png",
+                "sha256": goal_hash,
+                "roi_id": "scene",
+                "route_position": [100, 0],
+                "waypoint_id": "goal",
+                "source_run_id": "calibration-run-01",
+                "source_sequence": 20,
+            },
+        ],
+    }
+    profile_path = profile_root / "templates.json"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    worker = {
+        "schema_version": 2,
+        "target_window_title": "三角洲行动",
+        "capture_backend": "dxcam",
+        "emergency_virtual_key": 123,
+        "max_key_hold_ms": 250,
+        "loop_interval_ms": 20,
+        "max_duration_seconds": 15,
+        "perception": {
+            "mode": "template",
+            "template_profile": "route-01/templates.json",
+        },
+        "goal_node_id": "goal",
+        "nodes": {
+            "start": {
+                "x": 0,
+                "y": 0,
+                "edges": [{"target": "goal", "cost": 1}],
+            },
+            "goal": {"x": 100, "y": 0, "edges": []},
+        },
+        "edge_actions": [{"source": "start", "target": "goal", "key": "w"}],
+        "navigation": {
+            "pulse_ms": 100,
+            "min_progress_px": 4,
+            "stuck_after_ms": 600,
+            "localization_timeout_ms": 800,
+            "max_recovery_attempts": 0,
+            "recovery_keys": [],
+            "arrival_confirmations": 2,
+        },
+    }
+    config_path = config_root / "game-route.json"
+    config_path.write_text(json.dumps(worker), encoding="utf-8")
+    return config_path, start_image, goal_image
+
+
+def _template_frame(sequence: int, template: np.ndarray) -> CapturedFrame:
+    image = np.zeros((120, 180, 3), dtype=np.uint8)
+    image[40:52, 60:76] = template
+    image.setflags(write=False)
+    return CapturedFrame(sequence, 1_000 + sequence, image, "game-fixture")
+
+
 class FakeFrameSource:
     def __init__(self, frames) -> None:
         self._frames = iter(frames)
@@ -47,20 +149,87 @@ def test_load_controlled_window_settings_from_json() -> None:
     assert settings.goal_node_id == "goal"
     assert settings.graph["start"].edges[0].target_node_id == "turn"
     assert settings.policy.edge_actions[("turn", "goal")] == "d"
-    assert settings.marker_bgr == (0, 255, 0)
+    assert settings.perception.bgr == (0, 255, 0)
     assert settings.max_duration_seconds == 15
     assert settings.max_key_hold_ms == 250
-    assert settings.localization_radius <= GOAL_RADIUS
+    assert settings.perception.localization_radius <= GOAL_RADIUS
 
 
 def test_load_worker_settings_rejects_unknown_schema(tmp_path) -> None:
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    config["schema_version"] = 2
+    config["schema_version"] = 3
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config), encoding="utf-8")
 
     with pytest.raises(ValueError, match="schema_version"):
         load_worker_settings(path)
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0, "1"])
+def test_load_worker_settings_requires_exact_integer_schema(
+    tmp_path, schema_version: object
+) -> None:
+    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config["schema_version"] = schema_version
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version"):
+        load_worker_settings(path)
+
+
+def test_load_worker_settings_v2_resolves_template_profile_relative_to_config(
+    tmp_path,
+) -> None:
+    config_path, _, _ = _write_template_worker_fixture(tmp_path)
+
+    settings = load_worker_settings(config_path)
+
+    assert settings.target_window_title == "三角洲行动"
+    assert settings.perception.frame_size == (180, 120)
+    assert settings.perception.source_run_ids == frozenset({"calibration-run-01"})
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["", "/tmp/templates.json", "C:\\templates.json", "C:templates.json", "\\\\host\\x.json"],
+)
+def test_load_worker_settings_v2_rejects_unsafe_template_profile_reference(
+    tmp_path, reference: str
+) -> None:
+    config_path, _, _ = _write_template_worker_fixture(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["perception"]["template_profile"] = reference
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="template_profile"):
+        load_worker_settings(config_path)
+
+
+def test_load_worker_settings_v2_rejects_non_template_perception_mode(tmp_path) -> None:
+    config_path, _, _ = _write_template_worker_fixture(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["perception"]["mode"] = "color_anchor"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"perception\.mode"):
+        load_worker_settings(config_path)
+
+
+def test_template_profile_drives_worker_controller_to_goal(tmp_path) -> None:
+    config_path, start_image, goal_image = _write_template_worker_fixture(tmp_path)
+    settings = load_worker_settings(config_path)
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+    controller = build_navigation_controller(settings, actuator=actuator)
+
+    first = controller.on_frame(_template_frame(0, start_image), now_ns=0)
+    second = controller.on_frame(_template_frame(1, goal_image), now_ns=100_000_000)
+    third = controller.on_frame(_template_frame(2, goal_image), now_ns=200_000_000)
+
+    assert first.status is NavigationStatus.NAVIGATING
+    assert second.status is NavigationStatus.NAVIGATING
+    assert third.status is NavigationStatus.ARRIVED
+    assert actuator.pressed_keys == frozenset()
 
 
 def test_load_worker_settings_accepts_zero_screen_coordinates(tmp_path) -> None:
@@ -283,6 +452,27 @@ def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
     assert runtime.source is source
     assert runtime.target_window_handle == 123
     assert resolver_calls == ["dpi-aware-region", "window-handle"]
+
+
+def test_build_windows_runtime_rejects_template_profile_resolution_mismatch(
+    tmp_path,
+) -> None:
+    config_path, _, _ = _write_template_worker_fixture(tmp_path)
+    settings = load_worker_settings(config_path)
+
+    with pytest.raises(ValueError, match=r"模板 Profile.*180x120.*800x600"):
+        build_windows_runtime(
+            settings,
+            artifacts=tmp_path / "artifacts",
+            armed=False,
+            window_handle_resolver=lambda _: (_ for _ in ()).throw(
+                AssertionError("分辨率不匹配时不应解析 HWND")
+            ),
+            region_resolver=lambda _: CaptureRegion(0, 0, 800, 600),
+            dxcam_factory=lambda _: (_ for _ in ()).throw(
+                AssertionError("分辨率不匹配时不应创建截图 backend")
+            ),
+        )
 
 
 def test_build_windows_runtime_armed_uses_bound_win32_safety_gate(tmp_path) -> None:

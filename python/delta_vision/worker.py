@@ -9,7 +9,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Protocol
 
 from .actuator import DryRunActuator
@@ -27,6 +27,7 @@ from .navigation import (
 from .perception import ColorAnchorDetector
 from .planner import RouteEdge, RouteNode
 from .safe_input import SafetyGate, Win32InputActuator
+from .template_profile import TemplateProfile, load_template_profile
 from .win32_native import (
     Win32NativeGateway,
     find_window_handle,
@@ -60,6 +61,15 @@ class _Actuator(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ColorAnchorSettings:
+    bgr: tuple[int, int, int]
+    tolerance: int
+    minimum_area: int
+    confidence_threshold: float
+    localization_radius: float
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerSettings:
     target_window_title: str
     capture_backend: str
@@ -67,11 +77,7 @@ class WorkerSettings:
     max_key_hold_ms: int
     loop_interval_ms: int
     max_duration_seconds: float
-    marker_bgr: tuple[int, int, int]
-    marker_tolerance: int
-    marker_minimum_area: int
-    marker_confidence_threshold: float
-    localization_radius: float
+    perception: ColorAnchorSettings | TemplateProfile
     graph: Mapping[str, RouteNode]
     goal_node_id: str
     policy: NavigationPolicy
@@ -191,17 +197,7 @@ def _parse_edge_actions(raw_actions: object) -> dict[tuple[str, str], str]:
     return actions
 
 
-def load_worker_settings(path: str | Path) -> WorkerSettings:
-    config_path = Path(path)
-    raw = _mapping(json.loads(config_path.read_text(encoding="utf-8")), field="root")
-    if raw.get("schema_version") != 1:
-        raise ValueError("只支持 schema_version=1 的 Worker 配置")
-    title = raw.get("target_window_title")
-    if not isinstance(title, str) or not title:
-        raise ValueError("target_window_title 必须是非空字符串")
-    backend = raw.get("capture_backend")
-    if backend not in {"dxcam", "mss"}:
-        raise ValueError('capture_backend 只能是 "dxcam" 或 "mss"')
+def _parse_color_anchor(raw: Mapping[str, object]) -> ColorAnchorSettings:
     marker = _mapping(raw.get("marker"), field="marker")
     raw_bgr = marker.get("bgr")
     if (
@@ -210,6 +206,57 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
         or any(type(channel) is not int or not 0 <= channel <= 255 for channel in raw_bgr)
     ):
         raise ValueError("marker.bgr 必须包含三个 0 到 255 的整数")
+    confidence_threshold = _positive_number(
+        marker.get("confidence_threshold"),
+        field="marker.confidence_threshold",
+    )
+    if confidence_threshold > 1:
+        raise ValueError("marker.confidence_threshold 不能超过 1")
+    return ColorAnchorSettings(
+        bgr=(raw_bgr[0], raw_bgr[1], raw_bgr[2]),
+        tolerance=_byte_int(marker.get("tolerance"), field="marker.tolerance"),
+        minimum_area=_positive_int(
+            marker.get("minimum_area"), field="marker.minimum_area"
+        ),
+        confidence_threshold=confidence_threshold,
+        localization_radius=_positive_number(
+            raw.get("localization_radius"), field="localization_radius"
+        ),
+    )
+
+
+def _resolve_template_profile(
+    config_path: Path, raw: Mapping[str, object]
+) -> TemplateProfile:
+    perception = _mapping(raw.get("perception"), field="perception")
+    if perception.get("mode") != "template":
+        raise ValueError('schema_version=2 只支持 perception.mode="template"')
+    reference = perception.get("template_profile")
+    if not isinstance(reference, str) or not reference or "\0" in reference:
+        raise ValueError("perception.template_profile 必须是非空相对路径")
+    windows_reference = PureWindowsPath(reference)
+    if (
+        PurePosixPath(reference).is_absolute()
+        or windows_reference.is_absolute()
+        or bool(windows_reference.drive)
+    ):
+        raise ValueError("perception.template_profile 必须是相对路径")
+    profile_path = (config_path.parent / reference.replace("\\", "/")).resolve()
+    return load_template_profile(profile_path)
+
+
+def load_worker_settings(path: str | Path) -> WorkerSettings:
+    config_path = Path(path).resolve()
+    raw = _mapping(json.loads(config_path.read_text(encoding="utf-8")), field="root")
+    schema_version = raw.get("schema_version")
+    if type(schema_version) is not int or schema_version not in {1, 2}:
+        raise ValueError("只支持 schema_version=1 或 2 的 Worker 配置")
+    title = raw.get("target_window_title")
+    if not isinstance(title, str) or not title:
+        raise ValueError("target_window_title 必须是非空字符串")
+    backend = raw.get("capture_backend")
+    if backend not in {"dxcam", "mss"}:
+        raise ValueError('capture_backend 只能是 "dxcam" 或 "mss"')
     graph = _parse_graph(raw.get("nodes"))
     goal_node_id = raw.get("goal_node_id")
     if not isinstance(goal_node_id, str) or not goal_node_id:
@@ -245,12 +292,6 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
             field="navigation.arrival_confirmations",
         ),
     )
-    confidence_threshold = _positive_number(
-        marker.get("confidence_threshold"),
-        field="marker.confidence_threshold",
-    )
-    if confidence_threshold > 1:
-        raise ValueError("marker.confidence_threshold 不能超过 1")
     emergency_virtual_key = _positive_int(
         raw.get("emergency_virtual_key"), field="emergency_virtual_key"
     )
@@ -272,16 +313,10 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
         max_duration_seconds=_positive_number(
             raw.get("max_duration_seconds"), field="max_duration_seconds"
         ),
-        marker_bgr=tuple(raw_bgr),
-        marker_tolerance=_byte_int(
-            marker.get("tolerance"), field="marker.tolerance"
-        ),
-        marker_minimum_area=_positive_int(
-            marker.get("minimum_area"), field="marker.minimum_area"
-        ),
-        marker_confidence_threshold=confidence_threshold,
-        localization_radius=_positive_number(
-            raw.get("localization_radius"), field="localization_radius"
+        perception=(
+            _parse_color_anchor(raw)
+            if schema_version == 1
+            else _resolve_template_profile(config_path, raw)
         ),
         graph=graph,
         goal_node_id=goal_node_id,
@@ -294,20 +329,23 @@ def build_navigation_controller(
     *,
     actuator: DryRunActuator | Win32InputActuator,
 ) -> VisualNavigationController:
-    detector = ColorAnchorDetector(
-        label="player",
-        bgr=settings.marker_bgr,
-        tolerance=settings.marker_tolerance,
-        minimum_area=settings.marker_minimum_area,
-        confidence_threshold=settings.marker_confidence_threshold,
-    )
-    observer = WaypointObserver(
-        detector=detector,
-        waypoint_positions={
-            node_id: (node.x, node.y) for node_id, node in settings.graph.items()
-        },
-        localization_radius=settings.localization_radius,
-    )
+    if isinstance(settings.perception, ColorAnchorSettings):
+        detector = ColorAnchorDetector(
+            label="player",
+            bgr=settings.perception.bgr,
+            tolerance=settings.perception.tolerance,
+            minimum_area=settings.perception.minimum_area,
+            confidence_threshold=settings.perception.confidence_threshold,
+        )
+        observer = WaypointObserver(
+            detector=detector,
+            waypoint_positions={
+                node_id: (node.x, node.y) for node_id, node in settings.graph.items()
+            },
+            localization_radius=settings.perception.localization_radius,
+        )
+    else:
+        observer = settings.perception.observer
     return VisualNavigationController(
         graph=settings.graph,
         observer=observer,
@@ -336,6 +374,14 @@ def build_windows_runtime(
         raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
     # region_resolver 会先建立 DPI Awareness，随后解析的 HWND 与 DXGI 使用同一坐标系。
     region = region_resolver(settings.target_window_title)
+    if isinstance(settings.perception, TemplateProfile):
+        expected_width, expected_height = settings.perception.frame_size
+        if (region.width, region.height) != (expected_width, expected_height):
+            raise ValueError(
+                "模板 Profile 分辨率与目标窗口客户区不一致: "
+                f"expected={expected_width}x{expected_height}, "
+                f"actual={region.width}x{region.height}"
+            )
     target_window_handle = window_handle_resolver(settings.target_window_title)
     source_factory = dxcam_factory if settings.capture_backend == "dxcam" else mss_factory
     source = source_factory(region)
