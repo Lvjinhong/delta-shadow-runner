@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from delta_vision.safe_input import (
@@ -212,6 +214,96 @@ def test_watchdog_releases_key_without_waiting_for_control_loop() -> None:
     assert gateway.sent == [("key", 0x11, False), ("key", 0x11, True)]
     assert actuator.pressed_keys == frozenset()
     assert actuator.events[-1].reason == "看门狗超过最大按键时长"
+
+
+def test_blocked_foreground_check_does_not_block_watchdog_release() -> None:
+    class BlockingGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.should_block = False
+            self.check_started = threading.Event()
+            self.allow_check = threading.Event()
+
+        def foreground_window_handle(self) -> int:
+            if self.should_block:
+                self.check_started.set()
+                self.allow_check.wait(timeout=1)
+            return super().foreground_window_handle()
+
+    gateway = BlockingGateway()
+    timers = FakeTimerFactory()
+    actuator = _actuator(gateway, timer_factory=timers)
+    actuator.key_down("w", now_ns=1)
+    gateway.should_block = True
+    action_thread = threading.Thread(
+        target=lambda: actuator.key_down("a", now_ns=2),
+        daemon=True,
+    )
+    action_thread.start()
+    assert gateway.check_started.wait(timeout=0.2)
+    watchdog_finished = threading.Event()
+    watchdog_thread = threading.Thread(
+        target=lambda: (timers.timers[0].fire(), watchdog_finished.set()),
+        daemon=True,
+    )
+    watchdog_thread.start()
+
+    try:
+        assert watchdog_finished.wait(timeout=0.1)
+        assert "w" not in actuator.pressed_keys
+    finally:
+        gateway.allow_check.set()
+        action_thread.join(timeout=0.5)
+        watchdog_thread.join(timeout=0.5)
+
+
+def test_watchdog_retries_release_without_control_loop_progress() -> None:
+    class RetryGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.release_attempts = 0
+
+        def send_key(self, scan_code: int, *, key_up: bool) -> int:
+            self.sent.append(("key", scan_code, key_up))
+            if key_up:
+                self.release_attempts += 1
+                return 0 if self.release_attempts == 1 else 1
+            return 1
+
+    gateway = RetryGateway()
+    timers = FakeTimerFactory()
+    actuator = _actuator(gateway, timer_factory=timers)
+    actuator.key_down("w", now_ns=1)
+
+    timers.timers[0].fire()
+
+    assert actuator.pressed_keys == frozenset({"w"})
+    assert len(timers.timers) == 2
+    assert timers.timers[1].started is True
+
+    timers.timers[1].fire()
+
+    assert gateway.release_attempts == 2
+    assert actuator.pressed_keys == frozenset()
+
+
+def test_stale_watchdog_cannot_release_new_press_of_same_key() -> None:
+    gateway = FakeGateway()
+    timers = FakeTimerFactory()
+    actuator = _actuator(gateway, timer_factory=timers)
+    actuator.key_down("w", now_ns=1)
+    stale_timer = timers.timers[0]
+    actuator.key_up("w", now_ns=2)
+    actuator.key_down("w", now_ns=3)
+
+    stale_timer.fire()
+
+    assert actuator.pressed_keys == frozenset({"w"})
+    assert gateway.sent == [
+        ("key", 0x11, False),
+        ("key", 0x11, True),
+        ("key", 0x11, False),
+    ]
 
 
 def test_expire_overdue_attempts_every_release_after_one_failure() -> None:
