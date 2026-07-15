@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "delta-external-vision-runner"
+version = "0.1.0"
+description = "Windows 纯外部截图、视觉定位和安全输入 Worker"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "dxcam==0.3.0; platform_system == 'Windows'",
+  "mss==10.2.0",
+  "numpy>=2.2,<3",
+  "opencv-python-headless==5.0.0.93",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<10",
+  "pytest-cov>=6.2,<8",
+  "ruff>=0.15,<0.16",
+]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.pytest.ini_options]
+testpaths = ["python_tests"]
+addopts = [
+  "--strict-markers",
+  "--cov=delta_vision",
+  "--cov-branch",
+  "--cov-report=term-missing:skip-covered",
+  "--cov-fail-under=80",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["python", "python_tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]

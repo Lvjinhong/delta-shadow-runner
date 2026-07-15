@@ -28,8 +28,13 @@
       "id": "python-foundation",
       "category": "foundation",
       "description": "Python Worker 具备锁定依赖、类型配置、结构化日志、配置校验和单元测试入口",
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
+        "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
+        "python/delta_vision 包含不可变配置、确定性回放、颜色感知、A*、dry-run actuator 和 JSONL 事件",
+        "本机 Python 3.12.12：44 项测试与构建通过，覆盖率高于 90%；A* 与参考 Dijkstra 随机差分 1000/1000"
+      ]
     },
     {
       "id": "screen-capture",

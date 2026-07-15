@@ -21,6 +21,15 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - Windows 当前无可用 Python/uv；SSH 位于 WinDisc 虚拟桌面且截图探针失败，真实采集和输入 E2E 必须在交互桌面启动。
 - 准确率必须使用按整次运行切分的独立标注集；当前没有宣称《三角洲行动》成功率。
 
+[外部视觉重构：Foundation 已完成]
+- Python 版本固定为 3.12，依赖由 uv.lock 锁定；DXcam 只在 Windows 安装，MSS/OpenCV 为跨平台回放与测试依赖。
+- 已实现不可变 CaptureRegion/RunnerConfig、确定性 JSONL+PNG 回放、颜色锚点感知、Python A*、dry-run 按键生命周期和 JSONL 结构化事件。
+- 低置信锚点只保留 candidate_centroid 诊断值，可执行 centroid 强制为 null；置信阈值 0 被拒绝。
+- dry-run actuator 限制允许按键、最大持有时间、重复 key-down/up 幂等，并在 release_all 中按按下顺序逆序释放。
+- 本机 Python 3.12.12 验证：44 项 Python 测试、branch coverage、Ruff、wheel/sdist 构建和旧 Node 120/120 均通过；A* 与参考 Dijkstra 随机差分 1000/1000。
+- 独立审查发现并修复 armed 非布尔值可误开启、回放路径越界和 JSONL 非有限浮点数三个问题；修复均先红后绿。
+- 当前尚未实现真实 DXcam/MSS backend、Win32 SendInput、测试窗口 E2E 或游戏路线；对应 feature 仍为 false。
+
 [已完成]
 - Task 1：项目基线、统一 npm 脚本、TypeScript/Vite/Vitest 配置和 Windows 启动脚本。
 - Task 2：A* 路径规划；19 项测试通过，并用 2,000 个随机图与参考 Dijkstra 对照通过。
