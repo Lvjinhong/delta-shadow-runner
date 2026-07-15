@@ -198,10 +198,10 @@ def _percentile_nearest_rank(values: list[float], percentile: float) -> float:
 def _is_near_black(image: np.ndarray) -> bool:
     """按有效亮像素比例识别黑帧，避免单个噪点绕过。"""
 
-    brightest_channel = image.max(axis=2)
-    dark_pixel_ratio = float(
-        np.count_nonzero(brightest_channel <= 8)
-    ) / brightest_channel.size
+    # NumPy 的 axis max 会为 1440p 每帧分配并扫描一张完整中间图；OpenCV
+    # 在原生代码中直接生成单通道掩码，保留相同判定语义且避免拖慢抓帧门禁。
+    dark_mask = cv2.inRange(image, (0, 0, 0), (8, 8, 8))
+    dark_pixel_ratio = float(cv2.countNonZero(dark_mask)) / dark_mask.size
     return dark_pixel_ratio >= 0.99
 
 
