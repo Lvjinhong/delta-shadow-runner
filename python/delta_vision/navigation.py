@@ -25,6 +25,8 @@ class _Actuator(Protocol):
 
     def key_up(self, key: str, *, now_ns: int, reason: str | None = None) -> None: ...
 
+    def move_mouse_relative(self, dx: int, dy: int, *, now_ns: int) -> None: ...
+
     def release_all(self, *, now_ns: int, reason: str) -> None: ...
 
 
@@ -108,8 +110,26 @@ class WaypointObserver:
 
 
 @dataclass(frozen=True, slots=True)
+class RouteAction:
+    """进入路线边时转向一次，并重复发送有界移动脉冲。"""
+
+    key: str
+    mouse_dx: int = 0
+    mouse_dy: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("路线动作按键必须是非空字符串")
+        if any(
+            type(delta) is not int or abs(delta) > 4096
+            for delta in (self.mouse_dx, self.mouse_dy)
+        ):
+            raise ValueError("相对鼠标位移必须是 -4096..4096 的整数")
+
+
+@dataclass(frozen=True, slots=True)
 class NavigationPolicy:
-    edge_actions: Mapping[tuple[str, str], str]
+    edge_actions: Mapping[tuple[str, str], RouteAction]
     pulse_ms: int
     min_progress_px: float
     stuck_after_ms: int
@@ -139,7 +159,19 @@ class NavigationPolicy:
             raise ValueError("到达确认次数必须为正数")
         if self.max_recovery_attempts > 0 and not self.recovery_keys:
             raise ValueError("启用恢复时必须配置恢复按键")
-        object.__setattr__(self, "edge_actions", MappingProxyType(dict(self.edge_actions)))
+        normalized_actions: dict[tuple[str, str], RouteAction] = {}
+        for edge, raw_action in self.edge_actions.items():
+            if (
+                not isinstance(edge, tuple)
+                or len(edge) != 2
+                or not all(isinstance(node_id, str) and node_id for node_id in edge)
+            ):
+                raise ValueError("路线动作边必须由两个非空节点 ID 组成")
+            action = RouteAction(key=raw_action) if isinstance(raw_action, str) else raw_action
+            if not isinstance(action, RouteAction):
+                raise ValueError("路线动作必须是 RouteAction 或兼容的按键字符串")
+            normalized_actions[edge] = action
+        object.__setattr__(self, "edge_actions", MappingProxyType(normalized_actions))
         object.__setattr__(self, "recovery_keys", tuple(self.recovery_keys))
 
 
@@ -176,6 +208,7 @@ class VisualNavigationController:
         self._current_index = 0
         self._active_key: str | None = None
         self._pulse_deadline_ns: int | None = None
+        self._prepared_edge: tuple[str, str] | None = None
         self._last_frame_sequence: int | None = None
         self._last_captured_at_ns: int | None = None
         self._localizing_since_ns: int | None = None
@@ -226,12 +259,32 @@ class VisualNavigationController:
         self._active_key = key
         self._pulse_deadline_ns = now_ns + self._policy.pulse_ms * 1_000_000
 
+    def _start_route_action(
+        self,
+        edge: tuple[str, str],
+        action: RouteAction,
+        *,
+        now_ns: int,
+    ) -> None:
+        if self._active_key is not None:
+            return
+        if self._prepared_edge != edge:
+            if action.mouse_dx != 0 or action.mouse_dy != 0:
+                self._actuator.move_mouse_relative(
+                    action.mouse_dx,
+                    action.mouse_dy,
+                    now_ns=now_ns,
+                )
+            self._prepared_edge = edge
+        self._start_pulse(action.key, now_ns=now_ns)
+
     def _stop_internal(self, *, now_ns: int, reason: str) -> NavigationSnapshot:
         if self._status in {NavigationStatus.ARRIVED, NavigationStatus.STOPPED}:
             return self._snapshot()
         self._actuator.release_all(now_ns=now_ns, reason=reason)
         self._active_key = None
         self._pulse_deadline_ns = None
+        self._prepared_edge = None
         self._status = NavigationStatus.STOPPED
         self._reason = reason
         return self._snapshot()
@@ -279,7 +332,9 @@ class VisualNavigationController:
         return math.hypot(centroid[0] - target.x, centroid[1] - target.y)
 
     def _start_recovery(self, *, now_ns: int) -> NavigationSnapshot:
-        self._release_active(now_ns=now_ns, reason="视觉进展超时")
+        self._actuator.release_all(now_ns=now_ns, reason="视觉进展超时")
+        self._active_key = None
+        self._pulse_deadline_ns = None
         if self._recovery_attempts >= self._policy.max_recovery_attempts:
             return self._stop_internal(now_ns=now_ns, reason="恢复次数已耗尽")
         key = self._policy.recovery_keys[
@@ -295,6 +350,7 @@ class VisualNavigationController:
         self._actuator.release_all(now_ns=now_ns, reason="视觉确认目标节点")
         self._active_key = None
         self._pulse_deadline_ns = None
+        self._prepared_edge = None
         self._arrival_confirmations += 1
         if self._arrival_confirmations < self._policy.arrival_confirmations:
             return self._snapshot()
@@ -369,8 +425,9 @@ class VisualNavigationController:
         ):
             return self._start_recovery(now_ns=now_ns)
 
-        action_key = self._policy.edge_actions[(current_node_id, next_node_id)]
-        self._start_pulse(action_key, now_ns=now_ns)
+        edge = (current_node_id, next_node_id)
+        action = self._policy.edge_actions[edge]
+        self._start_route_action(edge, action, now_ns=now_ns)
         return self._snapshot()
 
     def on_timer(self, *, now_ns: int) -> NavigationSnapshot:

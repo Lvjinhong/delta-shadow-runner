@@ -21,6 +21,7 @@ from .navigation import (
     NavigationPolicy,
     NavigationSnapshot,
     NavigationStatus,
+    RouteAction,
     VisualNavigationController,
     WaypointObserver,
 )
@@ -51,9 +52,21 @@ class _FrameSource(Protocol):
     def close(self) -> None: ...
 
 
+class _InputEvent(Protocol):
+    kind: str
+    at_ns: int
+    key: str | None
+    dx: int | None
+    dy: int | None
+    reason: str | None
+
+
 class _Actuator(Protocol):
     @property
     def pressed_keys(self) -> frozenset[str]: ...
+
+    @property
+    def events(self) -> tuple[_InputEvent, ...]: ...
 
     def release_all(self, *, now_ns: int, reason: str) -> None: ...
 
@@ -179,10 +192,10 @@ def _parse_graph(raw_nodes: object) -> dict[str, RouteNode]:
     return graph
 
 
-def _parse_edge_actions(raw_actions: object) -> dict[tuple[str, str], str]:
+def _parse_edge_actions(raw_actions: object) -> dict[tuple[str, str], RouteAction]:
     if not isinstance(raw_actions, list):
         raise ValueError('配置字段 "edge_actions" 必须是数组')
-    actions: dict[tuple[str, str], str] = {}
+    actions: dict[tuple[str, str], RouteAction] = {}
     for index, raw_action in enumerate(raw_actions):
         action = _mapping(raw_action, field=f"edge_actions[{index}]")
         source = action.get("source")
@@ -193,7 +206,11 @@ def _parse_edge_actions(raw_actions: object) -> dict[tuple[str, str], str]:
         edge = (source, target)
         if edge in actions:
             raise ValueError(f'路线动作重复: "{source}->{target}"')
-        actions[edge] = key
+        actions[edge] = RouteAction(
+            key=key,
+            mouse_dx=action.get("mouse_dx", 0),
+            mouse_dy=action.get("mouse_dy", 0),
+        )
     return actions
 
 
@@ -366,9 +383,9 @@ def build_windows_runtime(
     mss_factory: Callable[[CaptureRegion], _FrameSource] = MssFrameSource,
     gateway_factory: Callable[[], Win32NativeGateway] = Win32NativeGateway,
 ) -> WindowsRuntime:
-    allowed_keys = set(settings.policy.edge_actions.values()) | set(
-        settings.policy.recovery_keys
-    )
+    allowed_keys = {
+        action.key for action in settings.policy.edge_actions.values()
+    } | set(settings.policy.recovery_keys)
     unsupported_keys = allowed_keys - SCAN_CODES.keys()
     if unsupported_keys:
         raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
@@ -435,6 +452,17 @@ def _snapshot_payload(
     }
 
 
+def _input_event_payload(event: _InputEvent) -> dict[str, object]:
+    return {
+        "kind": event.kind,
+        "at_ns": event.at_ns,
+        "key": event.key,
+        "dx": event.dx,
+        "dy": event.dy,
+        "reason": event.reason,
+    }
+
+
 def run_control_loop(
     *,
     source: _FrameSource,
@@ -450,22 +478,52 @@ def run_control_loop(
     started_at_ns = clock_ns()
     frame_count = 0
     snapshot: NavigationSnapshot | None = None
+    input_event_cursor = 0
+    pending_replay_input_payloads: list[dict[str, object]] = []
     try:
         while True:
             now_ns = clock_ns()
+            frame = None
             if now_ns - started_at_ns >= max_duration_seconds * 1_000_000_000:
                 snapshot = controller.stop(now_ns=now_ns, reason="Worker 运行超时")
-                break
-            actuator.expire_overdue(now_ns=now_ns)
-            frame = source.grab()
-            if frame is None:
-                snapshot = controller.on_timer(now_ns=now_ns)
             else:
-                snapshot = controller.on_frame(frame, now_ns=now_ns)
+                actuator.expire_overdue(now_ns=now_ns)
+                frame = source.grab()
+                if frame is None:
+                    snapshot = controller.on_timer(now_ns=now_ns)
+                else:
+                    snapshot = controller.on_frame(frame, now_ns=now_ns)
+            current_input_events = actuator.events
+            new_input_events = current_input_events[input_event_cursor:]
+            input_event_cursor = len(current_input_events)
+            input_payloads = [
+                _input_event_payload(event) for event in new_input_events
+            ]
+            pending_replay_input_payloads.extend(input_payloads)
+            for event, input_payload in zip(
+                new_input_events,
+                input_payloads,
+                strict=True,
+            ):
+                event_writer.write(
+                    RuntimeEvent(
+                        event_type="input",
+                        at_ns=event.at_ns,
+                        payload=input_payload,
+                    )
+                )
+            if frame is not None:
                 payload = _snapshot_payload(
                     snapshot, pressed_keys=actuator.pressed_keys
                 )
-                recorder.record(frame, metadata={"navigation": payload})
+                recorder.record(
+                    frame,
+                    metadata={
+                        "navigation": payload,
+                        "input_events": pending_replay_input_payloads,
+                    },
+                )
+                pending_replay_input_payloads.clear()
                 event_writer.write(
                     RuntimeEvent(event_type="frame", at_ns=now_ns, payload=payload)
                 )

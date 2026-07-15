@@ -6,6 +6,7 @@ from delta_vision.frames import CapturedFrame
 from delta_vision.navigation import (
     NavigationPolicy,
     NavigationStatus,
+    RouteAction,
     VisualNavigationController,
     WaypointObserver,
 )
@@ -147,6 +148,62 @@ def test_new_frame_during_active_pulse_does_not_repeat_key_down() -> None:
     assert [event.kind for event in actuator.events] == ["key_down"]
 
 
+def test_route_action_turns_mouse_once_then_repeats_only_key_pulse() -> None:
+    controller, actuator = _controller(
+        edge_actions={
+            ("A", "B"): RouteAction(key="w", mouse_dx=320, mouse_dy=-12),
+            ("B", "D"): RouteAction(key="w"),
+        }
+    )
+
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 70), now_ns=50_000_000)
+    controller.on_timer(now_ns=100_000_000)
+    controller.on_frame(_frame(2, 10, 60), now_ns=110_000_000)
+
+    assert [event.kind for event in actuator.events] == [
+        "mouse_move",
+        "key_down",
+        "key_up",
+        "key_down",
+    ]
+    mouse_event = actuator.events[0]
+    assert (mouse_event.dx, mouse_event.dy) == (320, -12)
+
+
+def test_route_action_turns_again_only_after_visual_edge_advance() -> None:
+    controller, actuator = _controller(
+        edge_actions={
+            ("A", "B"): RouteAction(key="w", mouse_dx=-80),
+            ("B", "D"): RouteAction(key="w", mouse_dx=240),
+        }
+    )
+
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 10), now_ns=100_000_000)
+
+    mouse_events = [event for event in actuator.events if event.kind == "mouse_move"]
+    assert [(event.dx, event.dy) for event in mouse_events] == [(-80, 0), (240, 0)]
+    assert actuator.pressed_keys == frozenset({"w"})
+
+
+def test_same_edge_relocalization_does_not_repeat_mouse_turn() -> None:
+    controller, actuator = _controller(
+        edge_actions={
+            ("A", "B"): RouteAction(key="w", mouse_dx=160),
+            ("B", "D"): RouteAction(key="w"),
+        }
+    )
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, None, None), now_ns=50_000_000)
+
+    relocalized = controller.on_frame(_frame(2, 10, 80), now_ns=100_000_000)
+
+    assert relocalized.status is NavigationStatus.NAVIGATING
+    assert [event.kind for event in actuator.events].count("mouse_move") == 1
+    assert actuator.pressed_keys == frozenset({"w"})
+
+
 def test_low_confidence_releases_active_pulse_and_times_out_without_input() -> None:
     controller, actuator = _controller()
     controller.on_frame(_frame(0, 10, 80), now_ns=0)
@@ -207,6 +264,29 @@ def test_visual_progress_after_recovery_resumes_navigation() -> None:
     assert resumed.active_key == "w"
     assert resumed.recovery_attempts == 0
     assert actuator.pressed_keys == frozenset({"w"})
+
+
+def test_recovery_releases_all_keys_and_does_not_repeat_edge_turn() -> None:
+    controller, actuator = _controller(
+        stuck_after_ms=100,
+        edge_actions={
+            ("A", "B"): RouteAction(key="w", mouse_dx=160),
+            ("B", "D"): RouteAction(key="w"),
+        },
+    )
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    actuator.key_down("d", now_ns=1)
+    controller.on_timer(now_ns=100_000_000)
+
+    recovering = controller.on_frame(_frame(1, 10, 80), now_ns=100_000_001)
+
+    assert recovering.status is NavigationStatus.RECOVERING
+    assert actuator.pressed_keys == frozenset({"s"})
+    assert [event.kind for event in actuator.events].count("mouse_move") == 1
+    assert [(event.kind, event.key) for event in actuator.events[-2:]] == [
+        ("key_up", "d"),
+        ("key_down", "s"),
+    ]
 
 
 def test_route_advances_only_after_visual_waypoint_confirmation() -> None:
@@ -381,3 +461,17 @@ def test_navigation_policy_requires_recovery_key_when_recovery_is_enabled() -> N
             recovery_keys=(),
             arrival_confirmations=2,
         )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error_match"),
+    [
+        ({"key": ""}, "按键"),
+        ({"key": "w", "mouse_dx": True}, "鼠标"),
+        ({"key": "w", "mouse_dx": 4097}, "鼠标"),
+        ({"key": "w", "mouse_dy": -4097}, "鼠标"),
+    ],
+)
+def test_route_action_rejects_unsafe_contract(kwargs, error_match: str) -> None:
+    with pytest.raises(ValueError, match=error_match):
+        RouteAction(**kwargs)

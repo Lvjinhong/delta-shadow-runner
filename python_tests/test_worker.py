@@ -130,7 +130,15 @@ def _write_template_worker_fixture(
             },
             "goal": {"x": 100, "y": 0, "edges": []},
         },
-        "edge_actions": [{"source": "start", "target": "goal", "key": "w"}],
+        "edge_actions": [
+            {
+                "source": "start",
+                "target": "goal",
+                "key": "w",
+                "mouse_dx": 320,
+                "mouse_dy": -12,
+            }
+        ],
         "navigation": {
             "pulse_ms": 100,
             "min_progress_px": 4,
@@ -172,7 +180,8 @@ def test_load_controlled_window_settings_from_json() -> None:
     assert settings.capture_backend == "dxcam"
     assert settings.goal_node_id == "goal"
     assert settings.graph["start"].edges[0].target_node_id == "turn"
-    assert settings.policy.edge_actions[("turn", "goal")] == "d"
+    legacy_action = settings.policy.edge_actions[("turn", "goal")]
+    assert (legacy_action.key, legacy_action.mouse_dx, legacy_action.mouse_dy) == ("d", 0, 0)
     assert settings.perception.bgr == (0, 255, 0)
     assert settings.max_duration_seconds == 15
     assert settings.max_key_hold_ms == 250
@@ -212,6 +221,8 @@ def test_load_worker_settings_v2_resolves_template_profile_relative_to_config(
     assert settings.target_window_title == "三角洲行动"
     assert settings.perception.frame_size == (180, 120)
     assert settings.perception.source_run_ids == frozenset({"calibration-run-01"})
+    action = settings.policy.edge_actions[("start", "goal")]
+    assert (action.key, action.mouse_dx, action.mouse_dy) == ("w", 320, -12)
 
 
 @pytest.mark.parametrize(
@@ -253,6 +264,11 @@ def test_template_profile_drives_worker_controller_to_goal(tmp_path) -> None:
     assert first.status is NavigationStatus.NAVIGATING
     assert second.status is NavigationStatus.NAVIGATING
     assert third.status is NavigationStatus.ARRIVED
+    assert (actuator.events[0].kind, actuator.events[0].dx, actuator.events[0].dy) == (
+        "mouse_move",
+        320,
+        -12,
+    )
     assert actuator.pressed_keys == frozenset()
 
 
@@ -299,6 +315,19 @@ def test_load_worker_settings_rejects_unsafe_numeric_values(
         load_worker_settings(path)
 
 
+@pytest.mark.parametrize("value", [True, 1.5, 4097, -4097])
+def test_load_worker_settings_rejects_unsafe_relative_mouse_delta(
+    tmp_path, value
+) -> None:
+    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config["edge_actions"][0]["mouse_dx"] = value
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="鼠标"):
+        load_worker_settings(path)
+
+
 def test_control_loop_reaches_goal_from_screenshot_frames_and_records_replay(
     tmp_path,
 ) -> None:
@@ -339,13 +368,64 @@ def test_control_loop_reaches_goal_from_screenshot_frames_and_records_replay(
         json.loads(line)
         for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert [event["payload"]["status"] for event in events] == [
+    frame_events = [event for event in events if event["event_type"] == "frame"]
+    assert [event["payload"]["status"] for event in frame_events] == [
         "navigating",
         "navigating",
         "navigating",
         "arrived",
     ]
-    assert events[-1]["payload"]["pressed_keys"] == []
+    assert frame_events[-1]["payload"]["pressed_keys"] == []
+
+
+def test_control_loop_records_mouse_and_key_events_in_replay_and_event_log(
+    tmp_path,
+) -> None:
+    config_path, start_image, goal_image = _write_template_worker_fixture(tmp_path)
+    settings = load_worker_settings(config_path)
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+    controller = build_navigation_controller(settings, actuator=actuator)
+    source = FakeFrameSource(
+        [
+            _template_frame(0, start_image),
+            None,
+            _template_frame(1, goal_image),
+            _template_frame(2, goal_image),
+        ]
+    )
+    clock = iter([0, 0, 100_000_000, 200_000_000, 250_000_000, 300_000_000])
+
+    result = run_control_loop(
+        source=source,
+        controller=controller,
+        actuator=actuator,
+        recorder=FrameRecorder(tmp_path / "replay"),
+        event_writer=JsonlEventWriter(tmp_path / "events.jsonl"),
+        clock_ns=lambda: next(clock),
+        sleep_fn=lambda _: None,
+        loop_interval_ms=20,
+        max_duration_seconds=15,
+    )
+
+    replayed = list(ReplayFrameSource(tmp_path / "replay"))
+    assert result.status is NavigationStatus.ARRIVED
+    assert [event["kind"] for event in replayed[0].metadata["input_events"]] == [
+        "mouse_move",
+        "key_down",
+    ]
+    assert replayed[0].metadata["input_events"][0]["dx"] == 320
+    assert [event["kind"] for event in replayed[1].metadata["input_events"]] == [
+        "key_up"
+    ]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["payload"]["kind"] for event in events if event["event_type"] == "input"] == [
+        "mouse_move",
+        "key_down",
+        "key_up",
+    ]
 
 
 def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None:
@@ -495,6 +575,24 @@ def test_build_windows_runtime_rejects_template_profile_resolution_mismatch(
             region_resolver=lambda _: CaptureRegion(0, 0, 800, 600),
             dxcam_factory=lambda _: (_ for _ in ()).throw(
                 AssertionError("分辨率不匹配时不应创建截图 backend")
+            ),
+        )
+
+
+def test_build_windows_runtime_rejects_unsupported_route_action_key(tmp_path) -> None:
+    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config["edge_actions"][0]["key"] = "x"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    settings = load_worker_settings(config_path)
+
+    with pytest.raises(ValueError, match=r"不支持的按键.*x"):
+        build_windows_runtime(
+            settings,
+            artifacts=tmp_path / "artifacts",
+            armed=False,
+            region_resolver=lambda _: (_ for _ in ()).throw(
+                AssertionError("非法按键应在截图初始化前被拒绝")
             ),
         )
 

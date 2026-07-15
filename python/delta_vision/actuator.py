@@ -8,11 +8,13 @@ from typing import Literal
 
 @dataclass(frozen=True, slots=True)
 class ActionEvent:
-    kind: Literal["key_down", "key_up"]
-    key: str
+    kind: Literal["key_down", "key_up", "mouse_move"]
+    key: str | None
     at_ns: int
     dry_run: bool
     reason: str | None = None
+    dx: int | None = None
+    dy: int | None = None
 
 
 class DryRunActuator:
@@ -53,6 +55,20 @@ class DryRunActuator:
             return
         del self._pressed_at[key]
         self._events.append(ActionEvent("key_up", key, now_ns, dry_run=True, reason=reason))
+
+    def move_mouse_relative(self, dx: int, dy: int, *, now_ns: int) -> None:
+        if type(dx) is not int or type(dy) is not int:
+            raise ValueError("相对鼠标位移必须是整数")
+        self._events.append(
+            ActionEvent(
+                "mouse_move",
+                None,
+                now_ns,
+                dry_run=True,
+                dx=dx,
+                dy=dy,
+            )
+        )
 
     def release_all(self, *, now_ns: int, reason: str) -> None:
         # 修饰键和移动键按按下顺序逆序释放，避免组合键残留。

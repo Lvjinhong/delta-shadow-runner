@@ -25,6 +25,22 @@ def test_dry_run_actuator_rejects_unknown_key() -> None:
         actuator.key_down("x", now_ns=1)
 
 
+def test_dry_run_mouse_move_records_delta_without_pressing_key() -> None:
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+
+    actuator.move_mouse_relative(12, -7, now_ns=1)
+
+    event = actuator.events[0]
+    assert (event.kind, event.key, event.dx, event.dy, event.dry_run) == (
+        "mouse_move",
+        None,
+        12,
+        -7,
+        True,
+    )
+    assert actuator.pressed_keys == frozenset()
+
+
 def test_dry_run_actuator_expires_overdue_key_holds() -> None:
     actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
     actuator.key_down("w", now_ns=1_000_000_000)

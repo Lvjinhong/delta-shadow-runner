@@ -182,6 +182,19 @@ def test_win32_actuator_sends_relative_mouse_motion() -> None:
     assert gateway.sent == [("mouse", 12, -7)]
 
 
+def test_win32_actuator_rechecks_gate_between_mouse_and_key_steps() -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway)
+    actuator.move_mouse_relative(12, -7, now_ns=1)
+    gateway.title = "Other Window"
+
+    with pytest.raises(ForegroundWindowError):
+        actuator.key_down("w", now_ns=2)
+
+    assert gateway.sent == [("mouse", 12, -7)]
+    assert actuator.pressed_keys == frozenset()
+
+
 def test_win32_actuator_expires_overdue_keys() -> None:
     gateway = FakeGateway()
     actuator = _actuator(gateway)
