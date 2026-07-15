@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
+import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .actuator import DryRunActuator
+from .capture import DxcamFrameSource, MssFrameSource
+from .config import CaptureRegion
 from .events import JsonlEventWriter, RuntimeEvent
 from .frames import CapturedFrame, FrameRecorder
 from .navigation import (
@@ -21,6 +26,22 @@ from .navigation import (
 )
 from .perception import ColorAnchorDetector
 from .planner import RouteEdge, RouteNode
+from .safe_input import SafetyGate, Win32InputActuator
+from .win32_native import (
+    Win32NativeGateway,
+    find_window_handle,
+    window_client_region,
+)
+
+SCAN_CODES = {
+    "w": 0x11,
+    "a": 0x1E,
+    "s": 0x1F,
+    "d": 0x20,
+    "e": 0x12,
+    "shift": 0x2A,
+    "space": 0x39,
+}
 
 
 class _FrameSource(Protocol):
@@ -41,6 +62,7 @@ class WorkerSettings:
     target_window_title: str
     capture_backend: str
     emergency_virtual_key: int
+    max_key_hold_ms: int
     loop_interval_ms: int
     max_duration_seconds: float
     marker_bgr: tuple[int, int, int]
@@ -59,6 +81,16 @@ class ControlLoopResult:
     frame_count: int
     duration_ns: int
     reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class WindowsRuntime:
+    source: _FrameSource
+    controller: VisualNavigationController
+    actuator: DryRunActuator | Win32InputActuator
+    recorder: FrameRecorder
+    event_writer: JsonlEventWriter
+    target_window_handle: int
 
 
 def _mapping(value: object, *, field: str) -> dict[str, object]:
@@ -215,10 +247,16 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
     )
     if emergency_virtual_key > 255:
         raise ValueError("emergency_virtual_key 不能超过 255")
+    max_key_hold_ms = _positive_int(
+        raw.get("max_key_hold_ms"), field="max_key_hold_ms"
+    )
+    if policy.pulse_ms > max_key_hold_ms:
+        raise ValueError("navigation.pulse_ms 不能超过 max_key_hold_ms")
     return WorkerSettings(
         target_window_title=title,
         capture_backend=backend,
         emergency_virtual_key=emergency_virtual_key,
+        max_key_hold_ms=max_key_hold_ms,
         loop_interval_ms=_positive_int(
             raw.get("loop_interval_ms"), field="loop_interval_ms"
         ),
@@ -245,7 +283,7 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
 def build_navigation_controller(
     settings: WorkerSettings,
     *,
-    actuator: object,
+    actuator: DryRunActuator | Win32InputActuator,
 ) -> VisualNavigationController:
     detector = ColorAnchorDetector(
         label="player",
@@ -264,10 +302,66 @@ def build_navigation_controller(
     return VisualNavigationController(
         graph=settings.graph,
         observer=observer,
-        actuator=actuator,  # type: ignore[arg-type]
+        actuator=actuator,
         goal_node_id=settings.goal_node_id,
         policy=settings.policy,
     )
+
+
+def build_windows_runtime(
+    settings: WorkerSettings,
+    *,
+    artifacts: str | Path,
+    armed: bool,
+    window_handle_resolver: Callable[[str], int] = find_window_handle,
+    region_resolver: Callable[[str], CaptureRegion] = window_client_region,
+    dxcam_factory: Callable[[CaptureRegion], _FrameSource] = DxcamFrameSource,
+    mss_factory: Callable[[CaptureRegion], _FrameSource] = MssFrameSource,
+    gateway_factory: Callable[[], Win32NativeGateway] = Win32NativeGateway,
+) -> WindowsRuntime:
+    allowed_keys = set(settings.policy.edge_actions.values()) | set(
+        settings.policy.recovery_keys
+    )
+    unsupported_keys = allowed_keys - SCAN_CODES.keys()
+    if unsupported_keys:
+        raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
+    target_window_handle = window_handle_resolver(settings.target_window_title)
+    region = region_resolver(settings.target_window_title)
+    source_factory = dxcam_factory if settings.capture_backend == "dxcam" else mss_factory
+    source = source_factory(region)
+    try:
+        if armed:
+            gateway = gateway_factory()
+            gate = SafetyGate(
+                target_window_title=settings.target_window_title,
+                target_window_handle=target_window_handle,
+                emergency_virtual_key=settings.emergency_virtual_key,
+                gateway=gateway,
+            )
+            actuator: DryRunActuator | Win32InputActuator = Win32InputActuator(
+                scan_codes={key: SCAN_CODES[key] for key in allowed_keys},
+                max_key_hold_ms=settings.max_key_hold_ms,
+                gate=gate,
+                gateway=gateway,
+            )
+        else:
+            actuator = DryRunActuator(
+                allowed_keys=allowed_keys,
+                max_key_hold_ms=settings.max_key_hold_ms,
+            )
+        controller = build_navigation_controller(settings, actuator=actuator)
+        artifact_root = Path(artifacts)
+        return WindowsRuntime(
+            source=source,
+            controller=controller,
+            actuator=actuator,
+            recorder=FrameRecorder(artifact_root / "replay"),
+            event_writer=JsonlEventWriter(artifact_root / "events.jsonl"),
+            target_window_handle=target_window_handle,
+        )
+    except BaseException:
+        source.close()
+        raise
 
 
 def _snapshot_payload(
@@ -334,3 +428,64 @@ def run_control_loop(
         raise
     finally:
         source.close()
+
+
+def run_windows_worker(
+    settings: WorkerSettings,
+    *,
+    artifacts: str | Path,
+    armed: bool,
+) -> ControlLoopResult:
+    runtime = build_windows_runtime(settings, artifacts=artifacts, armed=armed)
+    return run_control_loop(
+        source=runtime.source,
+        controller=runtime.controller,
+        actuator=runtime.actuator,
+        recorder=runtime.recorder,
+        event_writer=runtime.event_writer,
+        loop_interval_ms=settings.loop_interval_ms,
+        max_duration_seconds=settings.max_duration_seconds,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Windows 纯外部截图视觉导航 Worker")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/controlled-window.json"),
+    )
+    parser.add_argument("--artifacts", type=Path)
+    parser.add_argument(
+        "--armed",
+        action="store_true",
+        help="显式启用标准 SendInput；默认只记录动作，不发送输入",
+    )
+    args = parser.parse_args(argv)
+    artifacts = args.artifacts or Path("artifacts/runs") / time.strftime(
+        "%Y%m%d-%H%M%S"
+    )
+    try:
+        settings = load_worker_settings(args.config)
+        result = run_windows_worker(settings, artifacts=artifacts, armed=args.armed)
+    except Exception as error:
+        print(f"Worker 启动或运行失败: {error}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "status": str(result.status),
+                "frame_count": result.frame_count,
+                "duration_ns": result.duration_ns,
+                "reason": result.reason,
+                "artifacts": str(artifacts),
+                "armed": args.armed,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0 if result.status is NavigationStatus.ARRIVED else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

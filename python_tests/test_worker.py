@@ -5,11 +5,13 @@ import numpy as np
 import pytest
 
 from delta_vision.actuator import DryRunActuator
+from delta_vision.config import CaptureRegion
 from delta_vision.events import JsonlEventWriter
 from delta_vision.frames import CapturedFrame, FrameRecorder, ReplayFrameSource
 from delta_vision.navigation import NavigationStatus
 from delta_vision.worker import (
     build_navigation_controller,
+    build_windows_runtime,
     load_worker_settings,
     run_control_loop,
 )
@@ -46,6 +48,7 @@ def test_load_controlled_window_settings_from_json() -> None:
     assert settings.policy.edge_actions[("turn", "goal")] == "d"
     assert settings.marker_bgr == (0, 255, 0)
     assert settings.max_duration_seconds == 15
+    assert settings.max_key_hold_ms == 250
 
 
 def test_load_worker_settings_rejects_unknown_schema(tmp_path) -> None:
@@ -178,3 +181,67 @@ def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path)
 
     assert source.closed is True
     assert actuator.pressed_keys == frozenset()
+
+
+class FakeGateway:
+    def __init__(self) -> None:
+        self.sent = []
+
+    def foreground_window_handle(self) -> int:
+        return 123
+
+    def foreground_title(self) -> str:
+        return "Delta Vision Test Target"
+
+    def is_key_pressed(self, virtual_key: int) -> bool:
+        assert virtual_key == 123
+        return False
+
+    def send_key(self, scan_code: int, *, key_up: bool) -> int:
+        self.sent.append((scan_code, key_up))
+        return 1
+
+    def send_mouse_relative(self, dx: int, dy: int) -> int:
+        return 1
+
+
+def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
+    settings = load_worker_settings(CONFIG_PATH)
+    source = FakeFrameSource([])
+
+    runtime = build_windows_runtime(
+        settings,
+        artifacts=tmp_path,
+        armed=False,
+        window_handle_resolver=lambda _: 123,
+        region_resolver=lambda _: CaptureRegion(0, 0, 800, 600),
+        dxcam_factory=lambda region: source,
+        gateway_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("dry-run 不应加载输入 gateway")
+        ),
+    )
+
+    assert isinstance(runtime.actuator, DryRunActuator)
+    assert runtime.source is source
+    assert runtime.target_window_handle == 123
+
+
+def test_build_windows_runtime_armed_uses_bound_win32_safety_gate(tmp_path) -> None:
+    settings = load_worker_settings(CONFIG_PATH)
+    source = FakeFrameSource([])
+    gateway = FakeGateway()
+
+    runtime = build_windows_runtime(
+        settings,
+        artifacts=tmp_path,
+        armed=True,
+        window_handle_resolver=lambda _: 123,
+        region_resolver=lambda _: CaptureRegion(0, 0, 800, 600),
+        dxcam_factory=lambda region: source,
+        gateway_factory=lambda: gateway,
+    )
+    runtime.actuator.key_down("w", now_ns=1)
+    runtime.actuator.key_up("w", now_ns=2)
+
+    assert gateway.sent == [(0x11, False), (0x11, True)]
+    assert runtime.actuator.pressed_keys == frozenset()

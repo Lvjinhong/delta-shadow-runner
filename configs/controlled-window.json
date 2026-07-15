@@ -3,6 +3,7 @@
   "target_window_title": "Delta Vision Test Target",
   "capture_backend": "dxcam",
   "emergency_virtual_key": 123,
+  "max_key_hold_ms": 250,
   "loop_interval_ms": 20,
   "max_duration_seconds": 15,
   "marker": {
