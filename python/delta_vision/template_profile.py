@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from .config import CaptureRegion
+from .frames import DatasetContentDigest
 from .template_matching import (
     MatchDecisionPolicy,
     RouteTemplate,
@@ -27,6 +28,9 @@ class TemplateProfile:
     frame_size: tuple[int, int]
     manifest_sha256: str
     source_run_ids: frozenset[str]
+    source_frame_sha256s: frozenset[str]
+    source_perception_sha256s: frozenset[str]
+    perception_regions: tuple[CaptureRegion, ...]
 
 
 def _mapping(value: object, *, field: str) -> dict[str, object]:
@@ -42,13 +46,15 @@ def _positive_int(value: object, *, field: str) -> int:
 
 
 def _finite_number(value: object, *, field: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f'模板清单字段 "{field}" 必须是有限数')
     return float(value)
+
+
+def _sha256(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{64}", value) is None:
+        raise ValueError(f'模板清单字段 "{field}" 必须是 64 位十六进制')
+    return value.lower()
 
 
 def _safe_asset_path(root: Path, value: object, *, field: str) -> Path:
@@ -89,9 +95,7 @@ def _parse_rois(
         if not roi_id:
             raise ValueError("ROI ID 不能为空")
         roi = _mapping(raw_roi, field=f"rois.{roi_id}")
-        values = {
-            field: roi.get(field) for field in ("left", "top", "width", "height")
-        }
+        values = {field: roi.get(field) for field in ("left", "top", "width", "height")}
         if any(type(value) is not int for value in values.values()):
             raise ValueError(f'ROI "{roi_id}" 坐标和宽高必须是整数')
         if values["left"] < 0 or values["top"] < 0:
@@ -115,8 +119,12 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
     raw_bytes = manifest_path.read_bytes()
     raw = _mapping(json.loads(raw_bytes.decode("utf-8")), field="root")
     schema_version = raw.get("schema_version")
-    if type(schema_version) is not int or schema_version != 1:
-        raise ValueError("只支持 template profile schema_version=1")
+    if schema_version == 1 and type(schema_version) is int:
+        raise ValueError(
+            "template profile schema_version=1 已过期，请重新标定生成 schema_version=2"
+        )
+    if type(schema_version) is not int or schema_version != 2:
+        raise ValueError("只支持 template profile schema_version=2")
 
     capture = _mapping(raw.get("capture_profile"), field="capture_profile")
     frame_size = (
@@ -129,9 +137,7 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
     raw_scales = matcher.get("scales")
     if not isinstance(raw_scales, list) or not raw_scales:
         raise ValueError('模板清单字段 "matcher.scales" 必须是非空数组')
-    scales = tuple(
-        _finite_number(value, field="matcher.scales") for value in raw_scales
-    )
+    scales = tuple(_finite_number(value, field="matcher.scales") for value in raw_scales)
     if any(scale <= 0 for scale in scales):
         raise ValueError('模板清单字段 "matcher.scales" 必须全为正数')
     spatial_policy = MatchDecisionPolicy(
@@ -147,15 +153,80 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
         matcher.get("minimum_template_margin"),
         field="matcher.minimum_template_margin",
     )
-    nms_radius_px = _positive_int(
-        matcher.get("nms_radius_px"), field="matcher.nms_radius_px"
-    )
+    nms_radius_px = _positive_int(matcher.get("nms_radius_px"), field="matcher.nms_radius_px")
+
+    raw_source_datasets = raw.get("source_datasets")
+    if not isinstance(raw_source_datasets, list) or not raw_source_datasets:
+        raise ValueError('模板清单字段 "source_datasets" 必须是非空数组')
+    source_run_ids: set[str] = set()
+    source_frame_sha256s: set[str] = set()
+    source_perception_sha256s: set[str] = set()
+    frame_hashes_by_run: dict[str, dict[int, str]] = {}
+    for index, raw_dataset in enumerate(raw_source_datasets):
+        field = f"source_datasets[{index}]"
+        item = _mapping(raw_dataset, field=field)
+        run_id = item.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError(f'模板清单字段 "{field}.run_id" 必须是非空字符串')
+        if run_id in source_run_ids:
+            raise ValueError(f'模板清单的 source dataset run_id "{run_id}" 不能重复')
+        hashes = item.get("frame_sha256s")
+        if not isinstance(hashes, list) or not hashes:
+            raise ValueError(f'模板清单字段 "{field}.frame_sha256s" 必须是非空数组')
+        parsed_frame_hashes = [
+            _sha256(frame_hash, field=f"{field}.frame_sha256s") for frame_hash in hashes
+        ]
+        raw_frame_hashes = item.get("frame_hashes")
+        if not isinstance(raw_frame_hashes, list) or not raw_frame_hashes:
+            raise ValueError(f'模板清单字段 "{field}.frame_hashes" 必须是非空数组')
+        parsed_frame_hashes_by_sequence: dict[int, str] = {}
+        content_digest = DatasetContentDigest()
+        for frame_index, raw_frame_hash in enumerate(raw_frame_hashes):
+            frame_field = f"{field}.frame_hashes[{frame_index}]"
+            frame_item = _mapping(raw_frame_hash, field=frame_field)
+            sequence = frame_item.get("sequence")
+            if type(sequence) is not int or sequence < 0:
+                raise ValueError(f'模板清单字段 "{frame_field}.sequence" 必须是非负整数')
+            if sequence in parsed_frame_hashes_by_sequence:
+                raise ValueError(f'模板清单字段 "{field}.frame_hashes" 的 sequence 不能重复')
+            parsed_sha256 = _sha256(
+                frame_item.get("sha256"),
+                field=f"{frame_field}.sha256",
+            )
+            content_digest.update_hash(sequence, parsed_sha256)
+            parsed_frame_hashes_by_sequence[sequence] = parsed_sha256
+        if parsed_frame_hashes != list(parsed_frame_hashes_by_sequence.values()):
+            raise ValueError(
+                f'模板清单字段 "{field}.frame_sha256s" 必须与 frame_hashes 顺序一致'
+            )
+        perception_hashes = item.get("perception_sha256s")
+        if not isinstance(perception_hashes, list) or not perception_hashes:
+            raise ValueError(f'模板清单字段 "{field}.perception_sha256s" 必须是非空数组')
+        parsed_perception_hashes = {
+            _sha256(value, field=f"{field}.perception_sha256s") for value in perception_hashes
+        }
+        _sha256(item.get("run_json_sha256"), field=f"{field}.run_json_sha256")
+        expected_content_sha256 = _sha256(
+            item.get("dataset_content_sha256"),
+            field=f"{field}.dataset_content_sha256",
+        )
+        if content_digest.hexdigest() != expected_content_sha256:
+            raise ValueError(
+                f'模板清单字段 "{field}.dataset_content_sha256" 与 frame_hashes 不一致'
+            )
+        _sha256(
+            item.get("frame_manifest_sha256"),
+            field=f"{field}.frame_manifest_sha256",
+        )
+        frame_hashes_by_run[run_id] = parsed_frame_hashes_by_sequence
+        source_frame_sha256s.update(parsed_frame_hashes)
+        source_perception_sha256s.update(parsed_perception_hashes)
+        source_run_ids.add(run_id)
 
     raw_templates = raw.get("templates")
     if not isinstance(raw_templates, list) or not raw_templates:
         raise ValueError('模板清单字段 "templates" 必须是非空数组')
     route_templates: list[RouteTemplate] = []
-    source_run_ids: set[str] = set()
     root = manifest_path.parent
     for index, raw_template in enumerate(raw_templates):
         field = f"templates[{index}]"
@@ -170,25 +241,34 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
         if not isinstance(route_position, list) or len(route_position) != 2:
             raise ValueError(f'模板清单字段 "{field}.route_position" 必须包含两个数')
         parsed_position = tuple(
-            _finite_number(value, field=f"{field}.route_position")
-            for value in route_position
+            _finite_number(value, field=f"{field}.route_position") for value in route_position
         )
         waypoint_id = item.get("waypoint_id")
-        if waypoint_id is not None and (
-            not isinstance(waypoint_id, str) or not waypoint_id
-        ):
+        if waypoint_id is not None and (not isinstance(waypoint_id, str) or not waypoint_id):
             raise ValueError(f'模板清单字段 "{field}.waypoint_id" 必须是字符串或 null')
         source_run_id = item.get("source_run_id")
         if not isinstance(source_run_id, str) or not source_run_id:
             raise ValueError(f'模板清单字段 "{field}.source_run_id" 必须是非空字符串')
+        if source_run_id not in source_run_ids:
+            raise ValueError(f'模板清单字段 "{field}.source_run_id" 必须存在于 source_datasets')
         source_sequence = item.get("source_sequence")
         if type(source_sequence) is not int or source_sequence < 0:
             raise ValueError(f'模板清单字段 "{field}.source_sequence" 必须是非负整数')
+        source_frame_sha256 = _sha256(
+            item.get("source_frame_sha256"),
+            field=f"{field}.source_frame_sha256",
+        )
+        if frame_hashes_by_run[source_run_id].get(source_sequence) != source_frame_sha256:
+            raise ValueError(
+                f'模板清单字段 "{field}.source_sequence" 与 source_frame_sha256 '
+                "必须匹配同一 source dataset 帧"
+            )
         image_path = _safe_asset_path(root, item.get("image"), field=f"{field}.image")
         expected_hash = item.get("sha256")
-        if not isinstance(expected_hash, str) or re.fullmatch(
-            r"[0-9a-fA-F]{64}", expected_hash
-        ) is None:
+        if (
+            not isinstance(expected_hash, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash) is None
+        ):
             raise ValueError(f'模板清单字段 "{field}.sha256" 必须是 64 位十六进制')
         raw_image_bytes = image_path.read_bytes()
         actual_hash = hashlib.sha256(raw_image_bytes).hexdigest()
@@ -228,7 +308,6 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
                 waypoint_id=waypoint_id,
             )
         )
-        source_run_ids.add(source_run_id)
 
     observer = TemplateWaypointObserver(
         templates=tuple(route_templates),
@@ -240,4 +319,7 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
         frame_size=frame_size,
         manifest_sha256=hashlib.sha256(raw_bytes).hexdigest(),
         source_run_ids=frozenset(source_run_ids),
+        source_frame_sha256s=frozenset(source_frame_sha256s),
+        source_perception_sha256s=frozenset(source_perception_sha256s),
+        perception_regions=tuple(rois[roi_id] for roi_id in sorted(rois)),
     )

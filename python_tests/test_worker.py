@@ -10,7 +10,12 @@ from delta_vision.actuator import DryRunActuator
 from delta_vision.config import CaptureRegion
 from delta_vision.controlled_target import GOAL_RADIUS
 from delta_vision.events import JsonlEventWriter
-from delta_vision.frames import CapturedFrame, FrameRecorder, ReplayFrameSource
+from delta_vision.frames import (
+    CapturedFrame,
+    DatasetContentDigest,
+    FrameRecorder,
+    ReplayFrameSource,
+)
 from delta_vision.navigation import NavigationStatus
 from delta_vision.worker import (
     build_navigation_controller,
@@ -47,8 +52,11 @@ def _write_template_worker_fixture(
         profile_root / "start.png", 11
     )
     goal_image, goal_hash = _write_template_image(profile_root / "goal.png", 12)
+    dataset_digest = DatasetContentDigest()
+    dataset_digest.update_hash(10, "1" * 64)
+    dataset_digest.update_hash(20, "2" * 64)
     profile = {
-        "schema_version": 1,
+        "schema_version": 2,
         "capture_profile": {"width": 180, "height": 120},
         "matcher": {
             "scales": [1.0],
@@ -60,6 +68,20 @@ def _write_template_worker_fixture(
         "rois": {
             "scene": {"left": 0, "top": 0, "width": 180, "height": 120}
         },
+        "source_datasets": [
+            {
+                "run_id": "calibration-run-01",
+                "frame_sha256s": ["1" * 64, "2" * 64],
+                "frame_hashes": [
+                    {"sequence": 10, "sha256": "1" * 64},
+                    {"sequence": 20, "sha256": "2" * 64},
+                ],
+                "perception_sha256s": ["a" * 64, "b" * 64],
+                "dataset_content_sha256": dataset_digest.hexdigest(),
+                "run_json_sha256": "c" * 64,
+                "frame_manifest_sha256": "d" * 64,
+            }
+        ],
         "templates": [
             {
                 "id": "start-template",
@@ -70,6 +92,7 @@ def _write_template_worker_fixture(
                 "waypoint_id": "start",
                 "source_run_id": "calibration-run-01",
                 "source_sequence": 10,
+                "source_frame_sha256": "1" * 64,
             },
             {
                 "id": "goal-template",
@@ -80,6 +103,7 @@ def _write_template_worker_fixture(
                 "waypoint_id": "goal",
                 "source_run_id": "calibration-run-01",
                 "source_sequence": 20,
+                "source_frame_sha256": "2" * 64,
             },
         ],
     }

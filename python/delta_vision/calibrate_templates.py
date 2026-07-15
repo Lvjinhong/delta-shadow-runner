@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 from .config import CaptureRegion
-from .frames import CapturedFrame, ReplayFrameSource
+from .frames import DatasetContentDigest, ReplayFrameSource, frame_content_sha256
 
 
 def _is_finite_number(value: object) -> bool:
@@ -133,6 +133,14 @@ class CalibrationResult:
     manifest_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetScan:
+    encoded_templates: tuple[tuple[CalibrationLabel, bytes, str], ...]
+    frame_hashes: tuple[tuple[int, str], ...]
+    perception_sha256s: tuple[str, ...]
+    dataset_content_sha256: str
+
+
 def _parse_label(record: object, *, line_number: int) -> CalibrationLabel:
     item = _mapping(record, field=f"line[{line_number}]")
     run_id = item.get("run_id")
@@ -207,14 +215,21 @@ def _load_labels(path: Path) -> tuple[CalibrationLabel, ...]:
     return tuple(labels)
 
 
-def _load_run(dataset_root: Path) -> tuple[str, tuple[int, int]]:
+def _load_run(dataset_root: Path) -> tuple[str, tuple[int, int], int, str]:
     run_path = dataset_root / "run.json"
     if not run_path.is_file():
         raise FileNotFoundError(f"采样 run.json 不存在: {run_path}")
-    run = _mapping(json.loads(run_path.read_text(encoding="utf-8")), field="run.json")
+    raw_bytes = run_path.read_bytes()
+    run = _mapping(json.loads(raw_bytes.decode("utf-8")), field="run.json")
     run_id = run.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise ValueError("run.json 的 run_id 必须是非空字符串")
+    dataset_split = run.get("dataset_split")
+    if dataset_split != "calibration":
+        raise ValueError('run.json 的 dataset_split 必须是 "calibration"')
+    frame_count = run.get("frame_count")
+    if type(frame_count) is not int or frame_count <= 0:
+        raise ValueError("run.json 的 frame_count 必须是正整数")
     resolution = run.get("resolution")
     if (
         not isinstance(resolution, list)
@@ -222,14 +237,35 @@ def _load_run(dataset_root: Path) -> tuple[str, tuple[int, int]]:
         or any(type(value) is not int or value <= 0 for value in resolution)
     ):
         raise ValueError("run.json 的 resolution 必须包含两个正整数")
-    return run_id, (resolution[0], resolution[1])
+    return (
+        run_id,
+        (resolution[0], resolution[1]),
+        frame_count,
+        hashlib.sha256(raw_bytes).hexdigest(),
+    )
 
 
-def _load_frames(
-    dataset_root: Path, *, run_id: str, frame_size: tuple[int, int]
-) -> dict[int, CapturedFrame]:
-    frames: dict[int, CapturedFrame] = {}
+def _scan_dataset(
+    dataset_root: Path,
+    *,
+    run_id: str,
+    frame_size: tuple[int, int],
+    expected_frame_count: int,
+    labels: tuple[CalibrationLabel, ...],
+    regions: dict[str, CaptureRegion],
+) -> DatasetScan:
+    labels_by_sequence: dict[int, list[CalibrationLabel]] = {}
+    for label in labels:
+        labels_by_sequence.setdefault(label.sequence, []).append(label)
+
+    encoded_templates: list[tuple[CalibrationLabel, bytes, str]] = []
+    frame_hashes: list[tuple[int, str]] = []
+    perception_sha256s: list[str] = []
+    seen_label_sequences: set[int] = set()
+    content_digest = DatasetContentDigest()
+    replayed_frame_count = 0
     for frame in ReplayFrameSource(dataset_root):
+        replayed_frame_count += 1
         actual_size = (int(frame.image.shape[1]), int(frame.image.shape[0]))
         if actual_size != frame_size:
             raise ValueError(
@@ -241,10 +277,52 @@ def _load_frames(
             raise ValueError(f"sequence={frame.sequence} 的 metadata.run_id 不匹配")
         if frame.metadata.get("dataset_kind") != "manual-game-route":
             raise ValueError(f"sequence={frame.sequence} 不是 manual-game-route 采样数据")
-        frames[frame.sequence] = frame
-    if not frames:
+        if frame.metadata.get("dataset_split") != "calibration":
+            raise ValueError(
+                f"sequence={frame.sequence} 的 metadata.dataset_split 不是 calibration"
+            )
+        frame_sha256 = content_digest.update(frame.sequence, frame.image)
+        frame_hashes.append((frame.sequence, frame_sha256))
+        for _roi_id, region in sorted(regions.items()):
+            perception_sha256s.append(
+                frame_content_sha256(
+                    frame.image[
+                        region.top : region.bottom,
+                        region.left : region.right,
+                    ]
+                )
+            )
+        for label in labels_by_sequence.get(frame.sequence, ()):
+            region = regions[label.roi_id]
+            crop = np.array(
+                frame.image[region.top : region.bottom, region.left : region.right],
+                copy=True,
+            )
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            if float(np.std(gray)) < 1:
+                raise ValueError(f'模板 "{label.template_id}" 纹理不足')
+            encoded, buffer = cv2.imencode(".png", crop)
+            if not encoded:
+                raise OSError(f'模板 "{label.template_id}" PNG 编码失败')
+            encoded_templates.append((label, buffer.tobytes(), frame_sha256))
+            seen_label_sequences.add(frame.sequence)
+
+    if replayed_frame_count == 0:
         raise ValueError("采样数据集不包含任何回放帧")
-    return frames
+    if replayed_frame_count != expected_frame_count:
+        raise ValueError(
+            "run.json.frame_count 与回放清单不一致: "
+            f"declared={expected_frame_count}, replayed={replayed_frame_count}"
+        )
+    missing_sequences = sorted(set(labels_by_sequence) - seen_label_sequences)
+    if missing_sequences:
+        raise ValueError(f"标签 sequence={missing_sequences[0]} 不在采样数据集中")
+    return DatasetScan(
+        encoded_templates=tuple(encoded_templates),
+        frame_hashes=tuple(frame_hashes),
+        perception_sha256s=tuple(perception_sha256s),
+        dataset_content_sha256=content_digest.hexdigest(),
+    )
 
 
 def calibrate_templates(
@@ -258,37 +336,28 @@ def calibrate_templates(
     output_root = Path(output_directory)
     if output_root.exists() and any(output_root.iterdir()):
         raise FileExistsError(f"模板输出目录必须为空: {output_root}")
-    run_id, frame_size = _load_run(dataset_root)
+    run_id, frame_size, expected_frame_count, run_json_sha256 = _load_run(dataset_root)
     labels = _load_labels(Path(labels_path))
     if any(label.run_id != run_id for label in labels):
         raise ValueError(f'标签 run_id 必须全部等于采样运行 "{run_id}"')
-    frames = _load_frames(dataset_root, run_id=run_id, frame_size=frame_size)
-
     frame_width, frame_height = frame_size
-    encoded_templates: list[tuple[CalibrationLabel, bytes]] = []
     regions: dict[str, CaptureRegion] = {}
     for label in labels:
-        frame = frames.get(label.sequence)
-        if frame is None:
-            raise ValueError(f"标签 sequence={label.sequence} 不在采样数据集中")
         region = label.roi.to_region(frame_width, frame_height)
         regions[label.roi_id] = region
-        crop = np.array(
-            frame.image[region.top : region.bottom, region.left : region.right],
-            copy=True,
-        )
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        if float(np.std(gray)) < 1:
-            raise ValueError(f'模板 "{label.template_id}" 纹理不足')
-        encoded, buffer = cv2.imencode(".png", crop)
-        if not encoded:
-            raise OSError(f'模板 "{label.template_id}" PNG 编码失败')
-        encoded_templates.append((label, buffer.tobytes()))
+    scan = _scan_dataset(
+        dataset_root,
+        run_id=run_id,
+        frame_size=frame_size,
+        expected_frame_count=expected_frame_count,
+        labels=labels,
+        regions=regions,
+    )
 
     templates_root = output_root / "templates"
     templates_root.mkdir(parents=True, exist_ok=True)
     manifest_templates = []
-    for label, image_bytes in encoded_templates:
+    for label, image_bytes, source_frame_sha256 in scan.encoded_templates:
         relative_image = Path("templates") / f"{label.template_id}.png"
         image_path = output_root / relative_image
         temporary_path = image_path.with_name(f".{image_path.name}.tmp")
@@ -304,10 +373,11 @@ def calibrate_templates(
                 "waypoint_id": label.waypoint_id,
                 "source_run_id": label.run_id,
                 "source_sequence": label.sequence,
+                "source_frame_sha256": source_frame_sha256,
             }
         )
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "capture_profile": {"width": frame_width, "height": frame_height},
         "matcher": {
             "scales": list(matcher.scales),
@@ -325,6 +395,22 @@ def calibrate_templates(
             }
             for roi_id, region in sorted(regions.items())
         },
+        "source_datasets": [
+            {
+                "run_id": run_id,
+                "frame_sha256s": [sha256 for _sequence, sha256 in scan.frame_hashes],
+                "frame_hashes": [
+                    {"sequence": sequence, "sha256": sha256}
+                    for sequence, sha256 in scan.frame_hashes
+                ],
+                "perception_sha256s": list(scan.perception_sha256s),
+                "dataset_content_sha256": scan.dataset_content_sha256,
+                "run_json_sha256": run_json_sha256,
+                "frame_manifest_sha256": hashlib.sha256(
+                    (dataset_root / "manifest.jsonl").read_bytes()
+                ).hexdigest(),
+            }
+        ],
         "templates": manifest_templates,
     }
     manifest_path = output_root / "templates.json"

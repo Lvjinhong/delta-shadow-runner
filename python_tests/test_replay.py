@@ -5,7 +5,13 @@ import cv2
 import numpy as np
 import pytest
 
-from delta_vision.frames import CapturedFrame, FrameRecorder, ReplayFrameSource
+from delta_vision.frames import (
+    CapturedFrame,
+    DatasetContentDigest,
+    FrameRecorder,
+    ReplayFrameSource,
+    frame_content_sha256,
+)
 
 
 def _write_replay(directory) -> None:
@@ -54,6 +60,35 @@ def test_replay_is_deterministic_across_multiple_iterations(tmp_path) -> None:
         digests.append(digest.hexdigest())
 
     assert digests[0] == digests[1]
+
+
+def test_frame_content_hash_is_deterministic_and_shape_sensitive() -> None:
+    first = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+    same = np.array(first, copy=True)
+    reshaped = np.array(first, copy=True).reshape(3, 2, 3)
+
+    assert frame_content_sha256(first) == frame_content_sha256(same)
+    assert frame_content_sha256(first) != frame_content_sha256(reshaped)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        np.zeros((2, 3), dtype=np.uint8),
+        np.zeros((2, 3, 3), dtype=np.float32),
+        np.zeros((2, 3, 4), dtype=np.uint8),
+    ],
+)
+def test_frame_content_hash_rejects_non_bgr_uint8(image) -> None:
+    with pytest.raises(ValueError, match="BGR"):
+        frame_content_sha256(image)
+
+
+def test_dataset_content_digest_rejects_sequence_outside_uint64() -> None:
+    digest = DatasetContentDigest()
+
+    with pytest.raises(ValueError, match="uint64"):
+        digest.update_hash(2**64, "0" * 64)
 
 
 def test_replay_rejects_missing_image(tmp_path) -> None:
@@ -148,9 +183,7 @@ def test_frame_recorder_round_trips_resolution_and_action_metadata(tmp_path) -> 
         (16, 12),
         (16, 12),
     ]
-    assert replayed[0].metadata == {
-        "action": {"kind": "key_down", "key": "w"}
-    }
+    assert replayed[0].metadata == {"action": {"kind": "key_down", "key": "w"}}
     assert replayed[1].metadata == {"action": {"kind": "key_up", "key": "w"}}
 
 

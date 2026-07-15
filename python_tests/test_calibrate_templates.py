@@ -1,6 +1,8 @@
+import gc
 import hashlib
 import json
 import math
+import weakref
 
 import cv2
 import numpy as np
@@ -12,7 +14,12 @@ from delta_vision.calibrate_templates import (
     calibrate_templates,
     main,
 )
-from delta_vision.frames import CapturedFrame, FrameRecorder
+from delta_vision.frames import (
+    CapturedFrame,
+    DatasetContentDigest,
+    FrameRecorder,
+    frame_content_sha256,
+)
 from delta_vision.template_profile import load_template_profile
 
 
@@ -24,7 +31,11 @@ def _frame(sequence: int, seed: int, *, width: int = 100, height: int = 80) -> C
         1_000 + sequence,
         image,
         "fixture",
-        {"run_id": "game-run-001", "dataset_kind": "manual-game-route"},
+        {
+            "run_id": "game-run-001",
+            "dataset_kind": "manual-game-route",
+            "dataset_split": "calibration",
+        },
     )
 
 
@@ -40,6 +51,8 @@ def _dataset(tmp_path, frames: list[CapturedFrame] | None = None):
                 "run_id": "game-run-001",
                 "window_title": "三角洲行动",
                 "backend": "dxcam",
+                "dataset_split": "calibration",
+                "frame_count": len(actual_frames),
                 "resolution": [100, 80],
             }
         ),
@@ -166,6 +179,7 @@ def test_calibrate_templates_crops_exact_pixels_and_writes_traceable_profile(
     assert profile.frame_size == (100, 80)
     assert profile.source_run_ids == frozenset({"game-run-001"})
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 2
     assert manifest["rois"]["scene"] == {
         "left": 25,
         "top": 20,
@@ -179,6 +193,160 @@ def test_calibrate_templates_crops_exact_pixels_and_writes_traceable_profile(
         manifest["templates"][0]["sha256"] == hashlib.sha256(template_path.read_bytes()).hexdigest()
     )
     assert manifest["templates"][0]["source_sequence"] == 0
+    assert manifest["templates"][0]["source_frame_sha256"] == frame_content_sha256(frames[0].image)
+    assert manifest["source_datasets"] == [
+        {
+            "run_id": "game-run-001",
+            "frame_sha256s": [
+                frame_content_sha256(frames[0].image),
+                frame_content_sha256(frames[1].image),
+            ],
+            "frame_hashes": [
+                {
+                    "sequence": 0,
+                    "sha256": frame_content_sha256(frames[0].image),
+                },
+                {
+                    "sequence": 1,
+                    "sha256": frame_content_sha256(frames[1].image),
+                },
+            ],
+            "perception_sha256s": [
+                frame_content_sha256(frames[0].image[20:60, 25:75]),
+                frame_content_sha256(frames[1].image[20:60, 25:75]),
+            ],
+            "dataset_content_sha256": _dataset_content_sha256(frames),
+            "run_json_sha256": hashlib.sha256((dataset / "run.json").read_bytes()).hexdigest(),
+            "frame_manifest_sha256": hashlib.sha256(
+                (dataset / "manifest.jsonl").read_bytes()
+            ).hexdigest(),
+        }
+    ]
+
+
+def _dataset_content_sha256(frames: list[CapturedFrame]) -> str:
+    digest = DatasetContentDigest()
+    for frame in frames:
+        digest.update(frame.sequence, frame.image)
+    return digest.hexdigest()
+
+
+def test_calibrate_templates_streams_frames_without_retaining_history(
+    tmp_path, monkeypatch
+) -> None:
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    (dataset / "manifest.jsonl").write_text("fixture\n", encoding="utf-8")
+    (dataset / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "game-run-001",
+                "dataset_split": "calibration",
+                "frame_count": 3,
+                "resolution": [100, 80],
+            }
+        ),
+        encoding="utf-8",
+    )
+    labels_path = tmp_path / "labels.jsonl"
+    _write_labels(labels_path, [_label(sequence=0)])
+
+    class MemoryCheckingSource:
+        def __init__(self, _directory) -> None:
+            self.sequence = 0
+            self.references = []
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.sequence >= 3:
+                raise StopIteration
+            if self.sequence >= 2:
+                gc.collect()
+                assert self.references[self.sequence - 2]() is None
+            frame = _frame(self.sequence, self.sequence + 1)
+            self.references.append(weakref.ref(frame.image))
+            self.sequence += 1
+            return frame
+
+    monkeypatch.setattr(
+        "delta_vision.calibrate_templates.ReplayFrameSource",
+        MemoryCheckingSource,
+    )
+
+    result = calibrate_templates(
+        dataset_directory=dataset,
+        labels_path=labels_path,
+        output_directory=tmp_path / "profile",
+        matcher=MatcherConfiguration.default(),
+    )
+
+    assert result.template_count == 1
+
+
+def test_calibrate_templates_requires_calibration_dataset_split(tmp_path) -> None:
+    dataset, _ = _dataset(tmp_path)
+    run_path = dataset / "run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["dataset_split"] = "blind"
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    labels_path = tmp_path / "labels.jsonl"
+    _write_labels(labels_path, [_label()])
+
+    with pytest.raises(ValueError, match="dataset_split"):
+        calibrate_templates(
+            dataset_directory=dataset,
+            labels_path=labels_path,
+            output_directory=tmp_path / "profile",
+            matcher=MatcherConfiguration.default(),
+        )
+
+
+def test_calibrate_templates_requires_calibration_split_on_every_frame(
+    tmp_path,
+) -> None:
+    frame = _frame(0, 1)
+    poisoned = CapturedFrame(
+        frame.sequence,
+        frame.captured_at_ns,
+        frame.image,
+        frame.source,
+        {
+            "run_id": "game-run-001",
+            "dataset_kind": "manual-game-route",
+            "dataset_split": "blind",
+        },
+    )
+    dataset, _ = _dataset(tmp_path, [poisoned])
+    labels_path = tmp_path / "labels.jsonl"
+    _write_labels(labels_path, [_label()])
+
+    with pytest.raises(ValueError, match=r"metadata\.dataset_split"):
+        calibrate_templates(
+            dataset_directory=dataset,
+            labels_path=labels_path,
+            output_directory=tmp_path / "profile",
+            matcher=MatcherConfiguration.default(),
+        )
+
+
+def test_calibrate_templates_rejects_truncated_frame_manifest(tmp_path) -> None:
+    dataset, _ = _dataset(tmp_path)
+    run_path = dataset / "run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["frame_count"] = 3
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    labels_path = tmp_path / "labels.jsonl"
+    _write_labels(labels_path, [_label()])
+
+    with pytest.raises(ValueError, match="frame_count"):
+        calibrate_templates(
+            dataset_directory=dataset,
+            labels_path=labels_path,
+            output_directory=tmp_path / "profile",
+            matcher=MatcherConfiguration.default(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -257,7 +425,11 @@ def test_calibrate_templates_rejects_low_texture_crop(tmp_path) -> None:
         1_000,
         image,
         "fixture",
-        {"run_id": "game-run-001", "dataset_kind": "manual-game-route"},
+        {
+            "run_id": "game-run-001",
+            "dataset_kind": "manual-game-route",
+            "dataset_split": "calibration",
+        },
     )
     dataset, _ = _dataset(tmp_path, [frame])
     labels_path = tmp_path / "labels.jsonl"
@@ -372,7 +544,7 @@ def test_calibrate_templates_rejects_empty_dataset(tmp_path) -> None:
     labels_path = tmp_path / "labels.jsonl"
     _write_labels(labels_path, [_label()])
 
-    with pytest.raises(ValueError, match="不包含任何回放帧"):
+    with pytest.raises(ValueError, match="frame_count"):
         calibrate_templates(
             dataset_directory=dataset,
             labels_path=labels_path,
@@ -390,7 +562,11 @@ def test_calibrate_templates_validates_all_crops_before_writing(tmp_path) -> Non
         1_001,
         plain_image,
         "fixture",
-        {"run_id": "game-run-001", "dataset_kind": "manual-game-route"},
+        {
+            "run_id": "game-run-001",
+            "dataset_kind": "manual-game-route",
+            "dataset_split": "calibration",
+        },
     )
     dataset, _ = _dataset(tmp_path, [textured, plain])
     labels_path = tmp_path / "labels.jsonl"

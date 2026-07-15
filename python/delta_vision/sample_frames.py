@@ -50,9 +50,7 @@ class FrameSamplingSchedule:
         if type(self.sample_fps) is not int or not 2 <= self.sample_fps <= 5:
             raise ValueError("人工路线采样频率必须是 2 到 5 FPS 的整数")
         self._interval_ns = round(1_000_000_000 / self.sample_fps)
-        self._deadline_ns = self.started_at_ns + round(
-            self.duration_seconds * 1_000_000_000
-        )
+        self._deadline_ns = self.started_at_ns + round(self.duration_seconds * 1_000_000_000)
         self._next_sample_ns = self.started_at_ns
         self._previous_check_ns = self.started_at_ns
 
@@ -77,6 +75,7 @@ class FrameSamplingSchedule:
 @dataclass(frozen=True, slots=True)
 class SamplingResult:
     run_id: str
+    dataset_split: str
     window_title: str
     backend: str
     requested_duration_seconds: float
@@ -88,11 +87,18 @@ class SamplingResult:
 
 
 def _validate_run_id(run_id: object) -> str:
-    if not isinstance(run_id, str) or re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id
-    ) is None:
+    if (
+        not isinstance(run_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id) is None
+    ):
         raise ValueError("run_id 必须是 1 到 128 位字母、数字、点、下划线或短横线")
     return run_id
+
+
+def _validate_dataset_split(dataset_split: object) -> str:
+    if dataset_split not in {"calibration", "validation", "blind"}:
+        raise ValueError('dataset_split 必须是 "calibration"、"validation" 或 "blind"')
+    return dataset_split
 
 
 def _write_result(path: Path, result: SamplingResult) -> None:
@@ -111,6 +117,7 @@ def sample_source(
     *,
     output_directory: str | Path,
     run_id: str,
+    dataset_split: str,
     window_title: str,
     backend: str,
     duration_seconds: float,
@@ -122,6 +129,7 @@ def sample_source(
 
     try:
         parsed_run_id = _validate_run_id(run_id)
+        parsed_dataset_split = _validate_dataset_split(dataset_split)
         if not isinstance(window_title, str) or not window_title.strip():
             raise ValueError("window_title 必须是非空字符串")
         if backend not in {"dxcam", "mss"}:
@@ -165,6 +173,7 @@ def sample_source(
                 metadata={
                     "run_id": parsed_run_id,
                     "dataset_kind": "manual-game-route",
+                    "dataset_split": parsed_dataset_split,
                     "window_title": window_title,
                     "backend": backend,
                     "sample_fps": sample_fps,
@@ -176,11 +185,11 @@ def sample_source(
             raise RuntimeError("采样期间没有获得任何可用截图")
         result = SamplingResult(
             run_id=parsed_run_id,
+            dataset_split=parsed_dataset_split,
             window_title=window_title,
             backend=backend,
             requested_duration_seconds=float(duration_seconds),
-            measured_duration_seconds=max(0, ended_at_ns - started_at_ns)
-            / 1_000_000_000,
+            measured_duration_seconds=max(0, ended_at_ns - started_at_ns) / 1_000_000_000,
             sample_fps=sample_fps,
             frame_count=frame_count,
             no_frame_count=no_frame_count,
@@ -198,6 +207,7 @@ def run_windows_sampling(
     backend: str,
     output_directory: str | Path,
     run_id: str,
+    dataset_split: str,
     duration_seconds: float,
     sample_fps: int,
     start_delay_seconds: float,
@@ -226,6 +236,7 @@ def run_windows_sampling(
         source,
         output_directory=output_directory,
         run_id=run_id,
+        dataset_split=dataset_split,
         window_title=window_title,
         backend=backend,
         duration_seconds=duration_seconds,
@@ -239,6 +250,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--backend", choices=("dxcam", "mss"), default="dxcam")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", default=f"route-{time.strftime('%Y%m%d-%H%M%S')}")
+    parser.add_argument(
+        "--split",
+        dest="dataset_split",
+        choices=("calibration", "validation", "blind"),
+        required=True,
+    )
     parser.add_argument("--duration", type=float, default=120)
     parser.add_argument("--fps", type=int, choices=range(2, 6), default=5)
     parser.add_argument("--start-delay", type=float, default=5)
@@ -249,6 +266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             backend=args.backend,
             output_directory=args.output,
             run_id=args.run_id,
+            dataset_split=args.dataset_split,
             duration_seconds=args.duration,
             sample_fps=args.fps,
             start_delay_seconds=args.start_delay,

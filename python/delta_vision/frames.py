@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +26,45 @@ class CapturedFrame:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metadata", _freeze_mapping(self.metadata))
+
+
+def frame_content_sha256(image: NDArray[np.uint8]) -> str:
+    """对解码后的 BGR 帧生成跨 PNG 编码稳定的内容指纹。"""
+    if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("内容指纹只支持 H×W×3 的 uint8 BGR 图像")
+    digest = hashlib.sha256(b"delta-vision-bgr-frame-v1\0")
+    for dimension in image.shape:
+        digest.update(int(dimension).to_bytes(8, "little", signed=False))
+    digest.update(image.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+class DatasetContentDigest:
+    """按帧序号和解码像素构造顺序敏感的数据集内容指纹。"""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256(b"delta-vision-dataset-v1\0")
+        self._previous_sequence = -1
+
+    def update(self, sequence: int, image: NDArray[np.uint8]) -> str:
+        frame_sha256 = frame_content_sha256(image)
+        return self.update_hash(sequence, frame_sha256)
+
+    def update_hash(self, sequence: int, frame_sha256: str) -> str:
+        if type(sequence) is not int or not (0 <= sequence < 2**64):
+            raise ValueError("数据集帧序号必须是 uint64 范围内的整数")
+        if sequence <= self._previous_sequence:
+            raise ValueError("数据集帧序号必须单调递增")
+        if re.fullmatch(r"[0-9a-fA-F]{64}", frame_sha256) is None:
+            raise ValueError("帧内容指纹必须是 64 位十六进制")
+        normalized_sha256 = frame_sha256.lower()
+        self._digest.update(sequence.to_bytes(8, "little", signed=False))
+        self._digest.update(bytes.fromhex(normalized_sha256))
+        self._previous_sequence = sequence
+        return normalized_sha256
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
 
 
 def _freeze_value(value: Any) -> Any:
@@ -61,11 +102,7 @@ class FrameRecorder:
             or frame.captured_at_ns <= self._previous_captured_at_ns
         ):
             raise ValueError("录制帧序号和时间戳必须单调递增")
-        if (
-            frame.image.dtype != np.uint8
-            or frame.image.ndim != 3
-            or frame.image.shape[2] != 3
-        ):
+        if frame.image.dtype != np.uint8 or frame.image.ndim != 3 or frame.image.shape[2] != 3:
             raise ValueError("录制帧必须是 H×W×3 的 uint8 BGR 图像")
 
         relative_path = Path("frames") / f"frame-{frame.sequence:08d}.png"
