@@ -171,13 +171,41 @@ class FrameRecorder:
 
 
 class ReplayFrameSource:
-    """每次迭代都从 manifest 重新读取，保证回放不共享游标。"""
+    """既支持独立迭代，也支持 Worker 逐帧抓取的离线回放源。"""
 
     def __init__(self, directory: str | Path) -> None:
         self._directory = Path(directory)
         self._manifest = self._directory / "manifest.jsonl"
+        self._grab_iterator: Iterator[CapturedFrame] | None = None
+        self._closed = False
 
     def __iter__(self) -> Iterator[CapturedFrame]:
+        """每次迭代都从 manifest 重新读取，不共享 ``grab`` 游标。"""
+        return self._iter_frames()
+
+    def grab(self) -> CapturedFrame | None:
+        """按 Worker 截图源协议返回下一帧；回放结束后持续返回 ``None``。"""
+        if self._closed:
+            raise RuntimeError("回放源已经关闭")
+        if self._grab_iterator is None:
+            self._grab_iterator = self._iter_frames()
+        try:
+            return next(self._grab_iterator)
+        except StopIteration:
+            return None
+
+    def close(self) -> None:
+        """幂等关闭逐帧游标，不影响已经创建的独立迭代器。"""
+        if self._closed:
+            return
+        self._closed = True
+        if self._grab_iterator is not None:
+            close = getattr(self._grab_iterator, "close", None)
+            if close is not None:
+                close()
+        self._grab_iterator = None
+
+    def _iter_frames(self) -> Iterator[CapturedFrame]:
         if not self._manifest.is_file():
             raise FileNotFoundError(f"回放清单不存在: {self._manifest}")
 

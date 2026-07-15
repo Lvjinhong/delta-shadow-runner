@@ -62,6 +62,37 @@ def test_replay_is_deterministic_across_multiple_iterations(tmp_path) -> None:
     assert digests[0] == digests[1]
 
 
+def test_replay_grab_reads_frames_then_returns_none(tmp_path) -> None:
+    _write_replay(tmp_path)
+    source = ReplayFrameSource(tmp_path)
+
+    assert source.grab().sequence == 0
+    assert source.grab().sequence == 1
+    assert source.grab() is None
+    assert source.grab() is None
+
+
+def test_replay_iteration_does_not_share_grab_cursor(tmp_path) -> None:
+    _write_replay(tmp_path)
+    source = ReplayFrameSource(tmp_path)
+
+    assert source.grab().sequence == 0
+    assert [frame.sequence for frame in source] == [0, 1]
+    assert source.grab().sequence == 1
+
+
+def test_replay_close_is_idempotent_and_prevents_grab(tmp_path) -> None:
+    _write_replay(tmp_path)
+    source = ReplayFrameSource(tmp_path)
+    assert source.grab().sequence == 0
+
+    source.close()
+    source.close()
+
+    with pytest.raises(RuntimeError, match="已经关闭"):
+        source.grab()
+
+
 def test_frame_content_hash_is_deterministic_and_shape_sensitive() -> None:
     first = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
     same = np.array(first, copy=True)

@@ -1,6 +1,6 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 8,
+  "version": 9,
   "lastUpdated": "2026-07-16",
   "features": [
     {
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：382 项测试、Ruff 通过，总覆盖率 87.73%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000"
+        "本机 Python 3.12.12：386 项测试、Ruff 通过，总覆盖率 87.78%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000"
       ]
     },
     {
@@ -52,8 +52,8 @@
       "description": "录制帧、时间戳、分辨率和人工动作，并能确定性离线回放同一数据集",
       "passes": false,
       "evidence": [
-        "FrameRecorder 保存 PNG、时间戳、分辨率、导航元数据和独立 input-events.jsonl；ReplayFrameSource 校验路径、顺序、解码和尺寸",
-        "本机正常结束、无下一帧超时、截图异常和慢截图/watchdog 并发的确定性回放通过；Windows 实际采集产物尚未生成"
+        "FrameRecorder 保存 PNG、时间戳、分辨率、导航元数据和独立 input-events.jsonl；ReplayFrameSource 校验路径、顺序、解码和尺寸，并直接实现 Worker 的 grab/close 协议",
+        "本机标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放，以及正常结束、无下一帧超时、截图异常和慢截图/watchdog 并发均通过；Windows 实际采集产物尚未生成"
       ]
     },
     {
@@ -73,7 +73,7 @@
       "passes": false,
       "evidence": [
         "VisualNavigationController 只接收 CapturedFrame，使用模板路线位置、waypoint、A* 和显式边动作；每条边一次相对鼠标转向并重复有界按键脉冲",
-        "独立 10-Gate evaluator 的合成闭环、回放、低置信、恢复、终态和 watchdog 并发全部通过；Windows 黑盒路线尚未执行"
+        "独立 10-Gate evaluator 的合成闭环、回放、低置信、恢复、终态和 watchdog 并发全部通过；新增单条离线 E2E 复用标定流程实际产出的 Profile 驱动 Worker；Windows 黑盒路线尚未执行"
       ]
     },
     {

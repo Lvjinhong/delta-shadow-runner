@@ -17,7 +17,8 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 新增人工路线 calibration/validation/blind 采样、流式标定和独立评估；拒绝 run、整帧和感知 ROI 泄漏，并强制 100% 标签覆盖。
 - Worker 已接入 template profile schema v2、抽象路线位置、waypoint/A*、每条边一次相对鼠标转向和重复有界按键脉冲。
 - replay 新增独立 input-events.jsonl；正常结束、无下一帧超时、异常退出和慢截图/watchdog 并发均保留输入顺序。
-- 本机完整 Python 回归：382 项测试通过，总覆盖率 87.73%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
+- ReplayFrameSource 已直接实现 Worker 的 grab/close 协议，同时保持独立迭代游标；标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放的离线 E2E 已通过。
+- 本机完整 Python 回归：386 项测试通过，总覆盖率 87.78%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
 
 [已经具备]
 - DXcam 0.3.0 主截图 backend、MSS 10.2.0 回退 backend。
@@ -34,11 +35,10 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - feature-list.json 中相关功能继续保持 passes=false。
 
 [下一步]
-1. 提交并推送当前 README、游戏路线一键入口和 armed_ready 安全门。
-2. Windows 主机上线后，在交互桌面运行 Setup 与 60 秒 DXcam/MSS 基准。
-3. 采集同一固定路线的 calibration 与独立 blind 运行，按 README 生成标签、Profile 和 metrics。
-4. 先跑 game dry-run，再跑受控窗口 20/20、F12 <=200ms，最后在授权游戏场景跑固定路线 armed E2E。
-5. 根据真实 blind metrics 与完整路线结果调整 ROI、模板、mouse_dx/dy 和状态机阈值，不凭单次成功宣称准确率。
+1. Windows 主机上线后，在交互桌面运行 Setup 与 60 秒 DXcam/MSS 基准。
+2. 采集同一固定路线的 calibration 与独立 blind 运行，按 README 生成标签、Profile 和 metrics。
+3. 先跑 game dry-run，再跑受控窗口 20/20、F12 <=200ms，最后在授权游戏场景跑固定路线 armed E2E。
+4. 根据真实 blind metrics 与完整路线结果调整 ROI、模板、mouse_dx/dy 和状态机阈值，不凭单次成功宣称准确率。
 
 [恢复命令]
 - 本机：cd /Users/bytedance/.codex/tmp/delta-shadow-runner
