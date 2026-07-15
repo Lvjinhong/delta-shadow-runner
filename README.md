@@ -1,470 +1,342 @@
-# Shadow Runner Lab
+# Delta External Vision Runner
 
-一个运行在本机的固定路线智能体 Web Demo，用于演示：模拟观测、A* 路线规划、状态机决策、卡住恢复、REST/WebSocket 遥测和人工控制。
+Windows PC 端纯外部视觉自动化实验项目。主链路是：
 
-> [!IMPORTANT]
-> 本项目只连接内置模拟器、离线回放或 mock 数据。它不会读取在线游戏进程，不会采集游戏画面，不会发送真实键鼠输入，也不包含反作弊绕过能力。
-
-## 1. 能看到什么
-
-启动后，浏览器会显示一个实时仿真控制台：
-
-- 从模拟出生点到撤离点的最低代价路线；
-- 当前节点、下一目标、定位置信度和路线进度；
-- `idle → localizing → navigating → recovering → extracted` 状态变化；
-- 启动、暂停、继续、重置和注入卡住控制；
-- 通过 WebSocket 实时更新的事件时间线；
-- CPU-only、无输入执行器的运行边界。
-
-默认场景使用确定性路线，运行一次通常只需要约 2～3 秒，便于快速观察完整闭环。
-
-## 2. 环境要求
-
-必需：
-
-- Windows 10/11、macOS 或 Linux；
-- [Node.js](https://nodejs.org/) 24 或更高版本；
-- npm（随 Node.js 安装）；
-- Git。
-
-检查版本：
-
-```bash
-node --version
-npm --version
-git --version
+```text
+目标窗口客户区
+→ DXcam/MSS 截图
+→ OpenCV 视觉锚点与置信度
+→ waypoint 定位与 A* 路线
+→ 非阻塞短脉冲状态机
+→ 前台窗口 + HWND + F12 安全门
+→ Win32 SendInput
+→ PNG/JSONL 录制与确定性回放
 ```
 
-`node --version` 应显示 `v24.x.x` 或更高版本。
+项目不读取目标进程内存，不注入 DLL，不安装驱动，不修改游戏文件，也不提供反作弊规避、自动瞄准、自动射击或敌人战斗决策。
 
-## 3. 五分钟启动 Demo
+当前可直接运行的是独立受控测试窗口，用来验证真实桌面截图、视觉定位、路线规划和标准键盘输入。`《三角洲行动》` 的实际地图路线仍需要在用户授权的受控场景中采集截图、标定 waypoint 并单独验收；受控窗口通过不等于游戏路线已经通过。
 
-### 3.1 获取代码
+## 1. 最快开始：Windows 一键受控 E2E
 
-```bash
-git clone https://github.com/Lvjinhong/delta-shadow-runner.git
-cd delta-shadow-runner
+环境要求：
+
+1. Windows 10/11 x64；
+2. 当前用户处于可见的交互桌面；
+3. 可访问 WinGet 或 `astral.sh`；
+4. 显式同意测试窗口接收标准 WASD 输入。
+
+双击：
+
+```text
+start-controlled-e2e.cmd
 ```
 
-### 3.2 Windows：推荐入口
+确认后脚本会：
 
-在 PowerShell 或 Windows Terminal 中运行：
+1. 查找 `uv`；未安装时优先通过 WinGet 安装固定版本，WinGet 不可用时使用 Astral 官方版本化安装脚本；
+2. 用 `uv` 安装 Python 3.12；
+3. 执行 `uv sync --frozen --python 3.12`，严格按 `uv.lock` 同步依赖；
+4. 启动标题为 `Delta Vision Test Target` 的独立 Tk 测试窗口；
+5. 运行真正的截图 Worker，并显式开启 `--armed`；
+6. 通过截图寻找绿色锚点，沿 `start → turn → goal` 的 A* 路线发送短时 `W/D`；
+7. Worker 结束后清理它启动的测试窗口进程，并保留证据。
+
+急停键是 `F12`。切走目标窗口也会触发安全停止和按键释放。
+
+脚本不会启动旧 Web 页面，也没有需要访问的 URL。
+
+## 2. 分步运行
+
+### 2.1 只安装运行环境
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode dev
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode Setup
 ```
 
-脚本会：
+`-ExecutionPolicy Bypass` 只作用于本次 PowerShell 进程，不修改系统持久策略。
 
-1. 检查 Node.js 版本；
-2. 根据 `package-lock.json` 判断依赖是否完整；
-3. 首次运行或依赖漂移时执行 `npm ci`；
-4. 同时启动 API/WebSocket 服务和 Vite Web 开发服务器。
-
-看到两个服务都启动后，打开：
-
-<http://localhost:5173>
-
-停止服务：回到终端按 `Ctrl+C`。
-
-`-ExecutionPolicy Bypass` 只对本次 PowerShell 进程生效，不会修改系统的持久执行策略。
-
-### 3.3 macOS / Linux
-
-```bash
-npm ci
-npm run dev
-```
-
-然后打开：
-
-<http://localhost:5173>
-
-停止服务：回到终端按 `Ctrl+C`。
-
-## 4. 操作教程
-
-页面显示“遥测在线”和“待机”后，按下面顺序操作：
-
-1. 点击“启动 / 继续”。任务会进入“定位中”，随后开始沿固定路线航行。
-2. 如果要演示暂停，立即点击“暂停任务”；再次点击“启动 / 继续”即可恢复。
-3. 在任务撤离前点击“注入卡住”。下一次 500ms tick 会进入“脱困中”，恢复次数增加为 `1`。
-4. 查看“运行事件”区域。即使“脱困中”状态很短，事件中仍会保留“检测到卡住，执行回退恢复”。
-5. 等待任务显示“已撤离”，此时路线进度应为 `100%`，当前位置和目标均为 `EXTRACT`。
-6. 点击“重置模拟”，页面回到 `SPAWN A`、`0%` 路线进度和“待机”状态。
-
-因为默认路线只运行几秒，如果“注入卡住”已经禁用，通常表示任务已经撤离。点击“重置模拟”，重新启动后尽快注入即可。
-
-### 控制能力
-
-| 控制 | 可用条件 | 效果 |
-| --- | --- | --- |
-| 启动 / 继续 | 待机或人工暂停 | 启动新任务，或恢复被暂停的任务 |
-| 暂停任务 | 定位、航行或恢复中 | 保存可恢复状态并停止推进 |
-| 重置模拟 | 任意状态 | 重置模拟源、状态、指标和事件 |
-| 注入卡住 | 定位、航行或恢复中 | 让下一次模拟观测进入恢复分支 |
-
-## 5. Production 模式
-
-Production 模式会先构建服务端和 Web 静态资源，再由同一个 Node.js 服务提供页面、REST API 和 WebSocket。
-
-### Windows
+### 2.2 只启动受控测试窗口
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode build
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode start
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode TestTarget
 ```
 
-### macOS / Linux
+窗口中的绿色圆点是 Worker 唯一使用的状态来源。测试窗口会单独写 ground truth，供独立评估器核对；Worker 不读取该文件。
 
-```bash
-npm ci
-npm run build
-npm start
-```
+### 2.3 Dry-run
 
-打开：
-
-<http://127.0.0.1:4173>
-
-默认配置：
-
-| 配置 | 默认值 | 说明 |
-| --- | --- | --- |
-| `HOST` | `127.0.0.1` | Production 服务监听地址 |
-| `PORT` | `4173` | Production 服务端口 |
-| Runtime tick | `500ms` | 模拟观测和状态推进间隔 |
-| 计算设备 | CPU-only | 没有 GPU 运行时依赖 |
-
-macOS/Linux 自定义示例：
-
-```bash
-HOST=127.0.0.1 PORT=8080 npm start
-```
-
-PowerShell 自定义示例：
+先保持测试窗口打开并处于前台，再在另一个终端运行：
 
 ```powershell
-$env:HOST = "127.0.0.1"
-$env:PORT = "8080"
-npm.cmd start
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode DryRun
 ```
 
-然后访问 `http://127.0.0.1:8080`。
+Dry-run 会执行真实截图、识别、A*、状态机和录制，但只记录计划动作，不调用 `SendInput`。因为目标不会移动，状态机最终应进入有限恢复或安全停止；这属于预期行为。
 
-> [!NOTE]
-> 开发模式的 Vite 代理固定连接 `127.0.0.1:4173`，因此开发模式建议保留默认 API 端口。`HOST`/`PORT` 自定义主要用于 Production 模式。
+### 2.4 显式 armed
 
-## 6. API 使用
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 `
+  -Mode Armed `
+  -Config .\configs\controlled-window.json `
+  -ConfirmArmed
+```
 
-所有 REST 响应都使用统一 envelope：
+armed 模式同时要求：
+
+1. 命令行明确传入 `-ConfirmArmed`；
+2. 目标窗口标题精确匹配；
+3. 启动时解析出的 HWND 与当前前台 HWND 一致；
+4. `F12` 未按下；
+5. 每个按键持有时间没有超过配置上限；
+6. 每次 `SendInput` 返回的插入事件数等于 `1`。
+
+任何条件不满足都会阻止新输入并尝试释放已按下的键。
+
+## 3. 直接运行 Python 模块
+
+完成 Setup 后，可以跳过 PowerShell 包装层：
+
+```powershell
+# 测试窗口
+uv run python -m delta_vision.controlled_target `
+  --artifacts artifacts\manual\target
+
+# Worker 默认 dry-run
+uv run python -m delta_vision.worker `
+  --config configs\controlled-window.json `
+  --artifacts artifacts\manual\worker
+
+# 显式标准输入
+uv run python -m delta_vision.worker `
+  --config configs\controlled-window.json `
+  --artifacts artifacts\manual\worker-armed `
+  --armed
+```
+
+Worker 退出码：
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 连续视觉帧确认到达目标 |
+| `1` | 配置、窗口、采集、输入或运行异常 |
+| `2` | 安全停止或在限制时间内未到达 |
+
+## 4. 配置说明
+
+可运行示例位于 `configs/controlled-window.json`。
+
+### 4.1 窗口与采集
 
 ```json
 {
-  "success": true,
-  "data": {},
-  "error": null
+  "target_window_title": "Delta Vision Test Target",
+  "capture_backend": "dxcam",
+  "emergency_virtual_key": 123,
+  "max_key_hold_ms": 250,
+  "loop_interval_ms": 20,
+  "max_duration_seconds": 15
 }
 ```
 
-### REST API
+- `target_window_title`：必须完整匹配顶层窗口标题；
+- `capture_backend`：优先 `dxcam`，兼容性回退可改为 `mss`；
+- `emergency_virtual_key=123`：Win32 `VK_F12`；
+- `max_key_hold_ms`：硬性卡键上限；
+- `loop_interval_ms`：控制循环间隔；
+- `max_duration_seconds`：单次运行总时限。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/health` | 服务状态、运行模式和 tick 间隔 |
-| `GET` | `/api/snapshot` | 当前快照、场景地图和控制能力 |
-| `POST` | `/api/control/start` | 启动或继续任务 |
-| `POST` | `/api/control/pause` | 暂停任务 |
-| `POST` | `/api/control/reset` | 重置模拟 |
-| `POST` | `/api/control/inject-stuck` | 为下一次 tick 注入卡住观测 |
-
-控制请求只接受空 JSON 对象 `{}`。未知命令、非空请求体或非法路径返回 HTTP `400`。
-
-macOS/Linux 示例：
-
-```bash
-curl http://127.0.0.1:4173/api/health
-curl http://127.0.0.1:4173/api/snapshot
-curl -X POST http://127.0.0.1:4173/api/control/start \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-curl -X POST http://127.0.0.1:4173/api/control/inject-stuck \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-```
-
-PowerShell 示例：
-
-```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:4173/api/health"
-Invoke-RestMethod -Uri "http://127.0.0.1:4173/api/snapshot"
-Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:4173/api/control/start" `
-  -ContentType "application/json" `
-  -Body "{}"
-```
-
-健康检查成功示例：
+### 4.2 视觉锚点
 
 ```json
 {
-  "success": true,
-  "data": {
-    "status": "ok",
-    "mode": "simulation",
-    "compute": "cpu-only",
-    "tickMs": 500,
-    "running": true
+  "marker": {
+    "bgr": [0, 255, 0],
+    "tolerance": 8,
+    "minimum_area": 200,
+    "confidence_threshold": 0.9
   },
-  "error": null
+  "localization_radius": 32
 }
 ```
 
-### WebSocket
+首个受控 E2E 使用可解释的颜色连通域，而不是预训练模型。低于阈值时，检测器只保留诊断候选位置，不向导航状态机提供可执行 centroid，也不会发送新按键。
 
-连接地址：
-
-```text
-ws://127.0.0.1:4173/ws
-```
-
-服务端连接成功后首先发送：
+### 4.3 路线图与边动作
 
 ```json
 {
-  "type": "connection",
-  "data": {
-    "status": "connected",
-    "mode": "simulation"
+  "goal_node_id": "goal",
+  "nodes": {
+    "start": {
+      "x": 80,
+      "y": 520,
+      "edges": [{"target": "turn", "cost": 1}]
+    },
+    "turn": {
+      "x": 80,
+      "y": 80,
+      "edges": [{"target": "goal", "cost": 1}]
+    },
+    "goal": {"x": 700, "y": 80, "edges": []}
+  },
+  "edge_actions": [
+    {"source": "start", "target": "turn", "key": "w"},
+    {"source": "turn", "target": "goal", "key": "d"}
+  ]
+}
+```
+
+节点坐标使用目标窗口客户区像素。A* 只决定最低代价节点序列；具体按键由 `edge_actions` 明确配置。缺失边动作时 Worker 会在发送输入前停止。
+
+### 4.4 导航与恢复
+
+```json
+{
+  "navigation": {
+    "pulse_ms": 100,
+    "min_progress_px": 4,
+    "stuck_after_ms": 600,
+    "localization_timeout_ms": 800,
+    "max_recovery_attempts": 2,
+    "recovery_keys": ["s", "a"],
+    "arrival_confirmations": 2
   }
 }
 ```
 
-随后发送 `snapshot` 消息，并在控制命令或运行时 tick 后继续广播最新快照：
+- 动作是非阻塞短脉冲；timer 只能释放到期按键，不能在没有新截图时生成新输入；
+- 卡住只由锚点到下一 waypoint 的视觉距离长期不改善产生，不接受外部 `stuck=true`；
+- 恢复次数有硬上限；耗尽后进入 `stopped`；
+- 到达目标需要连续视觉确认，单帧不会直接成功。
 
-```json
-{
-  "type": "snapshot",
-  "data": {
-    "snapshot": {},
-    "scenario": {},
-    "capabilities": {}
-  }
-}
-```
+## 5. 运行产物
 
-## 7. 架构
-
-```mermaid
-flowchart LR
-  UI["React / Vite 控制台"]
-  API["Express REST API"]
-  WS["WebSocket 遥测"]
-  RT["500ms RunnerRuntime"]
-  SIM["确定性 SimulationSource"]
-  ENGINE["RunnerEngine 状态机"]
-  ASTAR["A* 路线规划"]
-  INTENT["ActionIntent<br/>无真实执行器"]
-
-  UI -->|控制命令| API
-  WS -->|实时快照| UI
-  API --> RT
-  RT --> WS
-  SIM --> RT
-  RT --> ENGINE
-  ENGINE --> ASTAR
-  ENGINE --> INTENT
-```
-
-核心分层：
-
-- `src/core`：纯 TypeScript 路线规划、场景、状态机和类型；
-- `src/server`：运行时循环、REST、WebSocket 和生命周期；
-- `src/web`：快照展示和控制请求，不包含决策逻辑；
-- `tests`：核心、服务端、Web 协议、样式、Windows 启动脚本和浏览器 E2E。
-
-## 8. 项目结构
+默认目录：
 
 ```text
-.
-├── init.ps1                 # Windows 安装、启动、测试和构建入口
-├── package.json             # npm 依赖和统一脚本
-├── playwright.config.ts     # Chromium E2E 配置
-├── src/
-│   ├── core/                # A*、固定场景、状态机和公共类型
-│   ├── server/              # Express、WebSocket 和 RunnerRuntime
-│   └── web/                 # React/Vite 控制台
-├── tests/
-│   ├── core/                # 路线和状态机测试
-│   ├── server/              # REST/WebSocket 测试
-│   ├── web/                 # Web 协议、投影和样式测试
-│   └── e2e/                 # Playwright 真实浏览器流程
-├── docs/superpowers/        # 设计说明和实现计划
-├── feature-list.json        # 已验收功能和证据
-└── Codex-progress.txt       # Windows 检查点与恢复说明
+artifacts/runs/YYYYMMDD-HHMMSS/
+├── target/
+│   └── target-ground-truth.jsonl
+└── worker/
+    ├── events.jsonl
+    └── replay/
+        ├── manifest.jsonl
+        └── frames/
+            └── frame-XXXXXXXX.png
 ```
 
-## 9. 测试和质量检查
+`manifest.jsonl` 保存 sequence、单调时间戳、来源、宽高和当帧导航/动作元数据。`ReplayFrameSource` 会拒绝时间倒退、路径逃逸、损坏图像和清单分辨率不一致。
 
-### 单元与集成测试
+不要让 Worker 读取 `target-ground-truth.jsonl`。它只供独立评估器在运行结束后核对真实到达状态。
+
+## 6. 开发与测试
 
 ```bash
+uv sync --frozen --python 3.12
+uv run pytest -q
+uv run ruff check python python_tests
+uv build
+```
+
+旧 TypeScript 模拟器仍保留为历史回归基线：
+
+```bash
+npm ci
 npm test
-```
-
-当前测试覆盖路线规划、状态机、恢复分支、API、WebSocket、前端协议校验、响应式样式和 Windows 初始化脚本。
-
-### 类型检查和构建
-
-```bash
 npm run typecheck
 npm run build
 ```
 
-### 浏览器 E2E
+它不属于外部视觉 Worker 的完成证据。
 
-首次运行先安装 Chromium：
+## 7. Windows 常见问题
 
-```bash
-npx playwright install chromium
-```
+### 找不到 `uv.exe`
 
-Windows 也可以显式调用 `.cmd`：
+先运行 `vision.ps1 -Mode Setup`。脚本会检查 PATH、`%USERPROFILE%\.local\bin` 和 WinGet Links。官方安装说明见 [Astral uv Installation](https://docs.astral.sh/uv/getting-started/installation/)。
 
-```powershell
-npx.cmd playwright install chromium
-```
+### `找不到窗口`
 
-执行 E2E：
-
-```bash
-npm run test:e2e
-```
-
-E2E 会自动构建 production bundle、启动 `127.0.0.1:4173`、运行单 worker Chromium 测试并关闭服务。它覆盖：
-
-- 启动、暂停、继续、卡住恢复、撤离和重置；
-- 真实 REST 与 WebSocket；
-- `1440×900`、`1024×768`、`390×844` 三档布局；
-- 横向溢出、关键 ARIA、44px 控件和 reduced motion；
-- console error、page error、失败请求和错误响应。
-
-测试产物：
-
-| 产物 | 路径 |
-| --- | --- |
-| HTML 报告 | `playwright-report/index.html` |
-| JUnit | `test-results/e2e-junit.xml` |
-| 截图、失败视频和 trace | `test-results/artifacts/` |
-
-Windows 一键测试/构建：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode test
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode build
-```
-
-强制重新安装 npm 依赖：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode test -ForceInstall
-```
-
-## 10. 常见问题
-
-### 提示“未找到 Node.js”或版本低于 24
-
-安装 Node.js 24+，关闭并重新打开终端，再检查：
-
-```powershell
-node --version
-npm.cmd --version
-```
-
-### PowerShell 阻止运行 `init.ps1`
-
-不要修改全局 ExecutionPolicy，直接使用 README 中的 process-only 命令：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode dev
-```
-
-### `4173` 或 `5173` 端口被占用
-
-Windows：
-
-```powershell
-Get-NetTCPConnection -LocalPort 4173,5173 -State Listen -ErrorAction SilentlyContinue
-```
-
-macOS/Linux：
-
-```bash
-lsof -nP -iTCP:4173 -sTCP:LISTEN
-lsof -nP -iTCP:5173 -sTCP:LISTEN
-```
-
-停止占用端口的本项目旧进程，或在 Production 模式下通过 `PORT` 更换端口。不要在未确认进程归属时强制结束其他程序。
-
-### 依赖目录存在但启动仍报缺包
-
-Windows 使用：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode test -ForceInstall
-```
-
-macOS/Linux 使用：
-
-```bash
-npm ci
-```
-
-### Playwright 提示找不到浏览器
-
-```bash
-npx playwright install chromium
-npm run test:e2e
-```
-
-### 页面一直显示“遥测连接中”
-
-1. 确认开发模式终端中 `server` 和 `web` 两个进程都已启动；
-2. 确认访问开发地址 `http://localhost:5173`，不是其他端口；
-3. 请求 `http://127.0.0.1:4173/api/health`；
-4. 检查端口是否被旧进程占用；
-5. 查看浏览器控制台和终端中的具体错误。
-
-## 11. 当前限制
-
-- 默认只有一个内置固定场景和确定性模拟源；
-- 运行状态保存在进程内，重启服务后不会持久化；
-- 当前没有用户认证或多租户隔离；
-- 默认只在 localhost 使用，未按公网服务做安全加固；
-- E2E 当前只验证 Chromium；
-- 项目不包含真实游戏视觉识别、输入执行器或线上游戏集成，因此测试结果不能解释为正式游戏环境的成功率、准确率或安全性结论。
-
-如需扩展新场景，优先实现 `RunnerScenario` 和 `SimulationSource`，保持 `src/core` 与真实输入设备解耦。
-
-## 12. 开发约定
-
-提交前至少运行：
-
-```bash
-npm test
-npm run build
-npm run test:e2e
-```
-
-提交格式：
+确认配置标题与目标窗口标题逐字一致。受控示例必须是：
 
 ```text
-<type>: <description>
+Delta Vision Test Target
 ```
 
-其中 `type` 使用 `feat`、`fix`、`refactor`、`docs`、`test`、`chore`、`perf` 或 `ci`。
+### `前台窗口不是目标窗口` 或 `窗口句柄不是目标窗口`
 
-更完整的设计和实现背景见：
+把目标窗口切到前台后重新运行。安全门故意不使用模糊标题，也不会自动向后台窗口发输入。
 
-- [`docs/superpowers/specs/2026-07-14-shadow-runner-design.md`](docs/superpowers/specs/2026-07-14-shadow-runner-design.md)
-- [`docs/superpowers/plans/2026-07-14-shadow-runner-implementation.md`](docs/superpowers/plans/2026-07-14-shadow-runner-implementation.md)
+### 截图黑屏或 DXcam 初始化失败
+
+1. 必须从 Windows 可见交互桌面运行，不能在 SSH/服务会话中把虚拟桌面截图当真实结果；
+2. 检查目标窗口没有最小化；
+3. 将配置中的 `capture_backend` 临时改为 `mss`，只说明该配置的兼容性结果；
+4. 保留错误日志和截图，不要由一次失败推断目标程序“根本不支持”。
+
+### `SendInput` 返回 0 或窗口没有响应
+
+确认 Worker 与目标窗口处于相同完整性级别，并检查目标是否真的位于前台。项目不会在标准 `SendInput` 被忽略时升级为驱动、注入或规避方案。
+
+### 双击后旧网页仍出现
+
+不要运行 `start-demo.cmd`。它属于旧模拟 Web Demo。外部视觉入口是 `start-controlled-e2e.cmd`，主程序没有浏览器 URL。
+
+## 8. 《三角洲行动》适配流程
+
+当前仓库没有把受控窗口坐标伪装成游戏可用路线。实际适配应按下面顺序进行：
+
+1. 固定分辨率、显示模式、地图区域和一条无战斗测试路线；
+2. 只录制人工行走的外部截图和动作时间戳；
+3. 按整次运行切分训练/验证数据，避免相邻帧泄漏；
+4. 标注视觉锚点、路线节点、交互提示和失败帧；
+5. 先在 replay 上评估 precision、recall、F1 和路线序列稳定性；
+6. 再以 dry-run 观察动作决策；
+7. 最后在用户授权的受控场景中显式 armed，先验证一个移动键和一次小转向；
+8. 只有完整保存截图、观测、决策、输入和最终状态后，才能报告该固定路线的成功率。
+
+准确率不能从 GitHub 项目介绍、单张截图或模拟器测试推算。首个游戏 MVP 的最低目标和证据要求记录在 `plan.md` 与 `feature-list.json`。
+
+## 9. 研究依据与边界
+
+源码级方案调研见：
+
+- `docs/research/2026-07-15-external-vision-options.md`
+
+当前实现的主要取舍：
+
+1. DXcam 作为 Windows DXGI 主采集路径，MSS 作为 GDI 回退；
+2. OpenCV 只做后处理和首版可解释视觉；
+3. 自己封装最小 Win32 `SendInput`，检查返回数量并维护 pressed-key registry；
+4. BetterGI 等 GPL 项目只研究架构，不复制其源码；
+5. 无明确 License 的仓库只参考概念，不复制代码。
+
+在线使用可能违反目标产品条款并导致账号处罚。请只在你有权控制的环境、账号和受控场景中运行。
+
+## 10. 旧 Web Demo
+
+仓库保留了早期 `Shadow Runner Lab`：React/Vite 页面、Node REST/WebSocket、模拟观测和 TypeScript A*。它可以通过旧 `init.ps1` / `start-demo.cmd` 启动，但只用于历史回归和监控资产复用。
+
+旧页面、HTTP 200、WebSocket 在线、模拟路线完成或浏览器 E2E 都不能替代以下证据：
+
+1. Windows 真实桌面持续截图；
+2. 来自截图的视觉定位；
+3. 真实标准输入返回数量；
+4. 前台切换与急停释放时间；
+5. 独立评估器复跑受控窗口和授权游戏路线。
+
+## 11. 仓库状态
+
+- 重构计划：`plan.md`
+- 逐项验收：`feature-list.json`
+- 可续做进度：`Codex-progress.txt`
+- 调研报告：`docs/research/2026-07-15-external-vision-options.md`
+- 受控示例配置：`configs/controlled-window.json`
+
+功能只有在对应证据达到阈值后才会在 `feature-list.json` 标为 `passes: true`。
