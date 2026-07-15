@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pytest
 
-from delta_vision.frames import ReplayFrameSource
+from delta_vision.frames import CapturedFrame, FrameRecorder, ReplayFrameSource
 
 
 def _write_replay(directory) -> None:
@@ -123,3 +123,76 @@ def test_replay_rejects_image_outside_replay_directory(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="必须位于回放目录内"):
         list(ReplayFrameSource(replay))
+
+
+def test_frame_recorder_round_trips_resolution_and_action_metadata(tmp_path) -> None:
+    recorder = FrameRecorder(tmp_path)
+    first = np.full((12, 16, 3), 17, dtype=np.uint8)
+    second = np.full((12, 16, 3), 29, dtype=np.uint8)
+
+    recorder.record(
+        CapturedFrame(0, 1_000, first, "dxcam:0:0"),
+        metadata={"action": {"kind": "key_down", "key": "w"}},
+    )
+    recorder.record(
+        CapturedFrame(1, 2_000, second, "dxcam:0:0"),
+        metadata={"action": {"kind": "key_up", "key": "w"}},
+    )
+
+    replayed = list(ReplayFrameSource(tmp_path))
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(record["width"], record["height"]) for record in records] == [
+        (16, 12),
+        (16, 12),
+    ]
+    assert replayed[0].metadata == {
+        "action": {"kind": "key_down", "key": "w"}
+    }
+    assert replayed[1].metadata == {"action": {"kind": "key_up", "key": "w"}}
+
+
+def test_frame_recorder_rejects_non_monotonic_frames(tmp_path) -> None:
+    recorder = FrameRecorder(tmp_path)
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    recorder.record(CapturedFrame(1, 100, image, "fixture"))
+
+    with pytest.raises(ValueError, match="单调递增"):
+        recorder.record(CapturedFrame(1, 101, image, "fixture"))
+    with pytest.raises(ValueError, match="单调递增"):
+        recorder.record(CapturedFrame(2, 99, image, "fixture"))
+
+
+def test_frame_recorder_does_not_append_manifest_when_image_write_fails(tmp_path) -> None:
+    recorder = FrameRecorder(tmp_path, image_writer=lambda *_: False)
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+
+    with pytest.raises(OSError, match="写入截图失败"):
+        recorder.record(CapturedFrame(0, 100, image, "fixture"))
+
+    manifest = tmp_path / "manifest.jsonl"
+    assert not manifest.exists() or manifest.read_text(encoding="utf-8") == ""
+
+
+def test_replay_rejects_manifest_resolution_mismatch(tmp_path) -> None:
+    image = np.zeros((4, 5, 3), dtype=np.uint8)
+    assert cv2.imwrite(str(tmp_path / "frame.png"), image)
+    (tmp_path / "manifest.jsonl").write_text(
+        json.dumps(
+            {
+                "sequence": 0,
+                "captured_at_ns": 1,
+                "image": "frame.png",
+                "source": "fixture",
+                "width": 999,
+                "height": 4,
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="分辨率"):
+        list(ReplayFrameSource(tmp_path))
