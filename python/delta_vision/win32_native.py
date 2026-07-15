@@ -19,6 +19,23 @@ INPUT_KEYBOARD = 1
 MOUSEEVENTF_MOVE = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
+DESKTOP_READOBJECTS = 0x0001
+UOI_NAME = 2
+WTS_CURRENT_SESSION = 0xFFFFFFFF
+WTS_CONNECT_STATE = 8
+WTS_ACTIVE = 0
+WTS_CONNECTION_STATE_NAMES = (
+    "Active",
+    "Connected",
+    "ConnectQuery",
+    "Shadow",
+    "Disconnected",
+    "Idle",
+    "Listen",
+    "Reset",
+    "Down",
+    "Init",
+)
 
 
 class MOUSEINPUT(Structure):
@@ -83,6 +100,18 @@ def _load_user32() -> Any:
     user32.GetClientRect.restype = ctypes.c_int
     user32.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.POINTER(POINT)]
     user32.ClientToScreen.restype = ctypes.c_int
+    user32.OpenInputDesktop.argtypes = [DWORD, ctypes.c_int, DWORD]
+    user32.OpenInputDesktop.restype = ctypes.c_void_p
+    user32.GetUserObjectInformationW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        DWORD,
+        ctypes.POINTER(DWORD),
+    ]
+    user32.GetUserObjectInformationW.restype = ctypes.c_int
+    user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+    user32.CloseDesktop.restype = ctypes.c_int
     if hasattr(user32, "SetProcessDpiAwarenessContext"):
         user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
         user32.SetProcessDpiAwarenessContext.restype = ctypes.c_int
@@ -90,6 +119,23 @@ def _load_user32() -> Any:
         user32.SetProcessDPIAware.argtypes = []
         user32.SetProcessDPIAware.restype = ctypes.c_int
     return user32
+
+
+def _load_wtsapi32() -> Any:
+    if sys.platform != "win32":
+        raise OSError("WTS 会话查询只能在 Windows 上运行")
+    wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
+    wtsapi32.WTSQuerySessionInformationW.argtypes = [
+        ctypes.c_void_p,
+        DWORD,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(DWORD),
+    ]
+    wtsapi32.WTSQuerySessionInformationW.restype = ctypes.c_int
+    wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+    wtsapi32.WTSFreeMemory.restype = None
+    return wtsapi32
 
 
 def _last_error() -> int:
@@ -108,6 +154,87 @@ def enable_per_monitor_dpi_awareness(*, user32: Any | None = None) -> None:
     if fallback is not None and fallback():
         return
     raise OSError(_last_error(), "无法启用进程 DPI Awareness")
+
+
+def _current_wts_connection_state(*, wtsapi32: Any) -> int:
+    buffer = ctypes.c_void_p()
+    returned_bytes = DWORD()
+    if not wtsapi32.WTSQuerySessionInformationW(
+        None,
+        WTS_CURRENT_SESSION,
+        WTS_CONNECT_STATE,
+        ctypes.byref(buffer),
+        ctypes.byref(returned_bytes),
+    ):
+        raise OSError(_last_error(), "无法查询当前 Windows 会话连接状态")
+    if not buffer.value:
+        raise OSError("Windows 会话连接状态查询返回了空缓冲区")
+    try:
+        if returned_bytes.value < ctypes.sizeof(ctypes.c_int):
+            raise OSError("Windows 会话连接状态数据长度不足")
+        return int(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_int)).contents.value)
+    finally:
+        wtsapi32.WTSFreeMemory(buffer)
+
+
+def ensure_capture_ready_desktop(
+    *,
+    user32: Any | None = None,
+    wtsapi32: Any | None = None,
+) -> None:
+    """只允许已解锁的 WinSta0/Default 输入桌面进入截图链。"""
+
+    native = user32 or _load_user32()
+    session_api = wtsapi32 or _load_wtsapi32()
+    connection_state = _current_wts_connection_state(wtsapi32=session_api)
+    if connection_state != WTS_ACTIVE:
+        state_name = (
+            WTS_CONNECTION_STATE_NAMES[connection_state]
+            if 0 <= connection_state < len(WTS_CONNECTION_STATE_NAMES)
+            else f"Unknown({connection_state})"
+        )
+        raise RuntimeError(
+            "Windows 当前会话不是 Active，"
+            f"WTS state={state_name}；请连接并解锁可见桌面后重试"
+        )
+    desktop_handle = native.OpenInputDesktop(0, False, DESKTOP_READOBJECTS)
+    if not desktop_handle:
+        raise OSError(
+            _last_error(),
+            "无法访问 Windows 输入桌面；请在已登录、已解锁的可见桌面运行",
+        )
+    try:
+        required_bytes = DWORD()
+        native.GetUserObjectInformationW(
+            desktop_handle,
+            UOI_NAME,
+            None,
+            0,
+            ctypes.byref(required_bytes),
+        )
+        if required_bytes.value <= ctypes.sizeof(ctypes.c_wchar):
+            raise OSError(_last_error(), "无法读取 Windows 输入桌面名称")
+        wchar_size = ctypes.sizeof(ctypes.c_wchar)
+        character_count = (required_bytes.value + wchar_size - 1) // wchar_size
+        buffer = ctypes.create_unicode_buffer(character_count)
+        if not native.GetUserObjectInformationW(
+            desktop_handle,
+            UOI_NAME,
+            ctypes.cast(buffer, ctypes.c_void_p),
+            required_bytes.value,
+            ctypes.byref(required_bytes),
+        ):
+            raise OSError(_last_error(), "无法读取 Windows 输入桌面名称")
+        desktop_name = buffer.value
+    finally:
+        close_succeeded = bool(native.CloseDesktop(desktop_handle))
+        if not close_succeeded and sys.exc_info()[0] is None:
+            raise OSError(_last_error(), "关闭 Windows 输入桌面句柄失败")
+    if desktop_name.casefold() != "default":
+        raise RuntimeError(
+            "Windows 当前处于锁屏或安全桌面，"
+            f'input desktop="{desktop_name}"；请解锁后重试'
+        )
 
 
 class Win32NativeGateway:
@@ -174,10 +301,12 @@ def window_client_region(
     window_title: str,
     *,
     user32: Any | None = None,
+    wtsapi32: Any | None = None,
 ) -> CaptureRegion:
     """把指定顶层窗口的客户区转换成桌面像素坐标。"""
 
     native = user32 or _load_user32()
+    ensure_capture_ready_desktop(user32=native, wtsapi32=wtsapi32)
     if user32 is None:
         enable_per_monitor_dpi_awareness(user32=native)
     window_handle = find_window_handle(window_title, user32=native)
