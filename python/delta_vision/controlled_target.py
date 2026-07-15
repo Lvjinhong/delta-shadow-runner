@@ -21,7 +21,9 @@ CANVAS_HEIGHT = 600
 START_POSITION = (80.0, 520.0)
 TURN_POSITION = (80.0, 80.0)
 GOAL_POSITION = (700.0, 80.0)
-GOAL_RADIUS = 20.0
+# 受控目标一旦进入该半径就停止移动；必须小于 Worker 的定位半径，避免目标已冻结
+# 但视觉状态机仍无法归入 goal 的边界死区。
+GOAL_RADIUS = 16.0
 
 
 class _Window(Protocol):
