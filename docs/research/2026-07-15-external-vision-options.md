@@ -1,6 +1,6 @@
 # Windows 外部视觉自动化源码调研
 
-更新时间：2026-07-15
+更新时间：2026-07-16
 
 ## 1. 结论
 
@@ -24,7 +24,7 @@
 3. 首版定位使用固定 ROI、模板/局部特征、上一节点约束和 waypoint，不先训练 YOLO，也不做端到端 RL。
 4. HUD 文本门控后续可接 RapidOCR；目标检测只在真实样本证明经典方法不够时引入。
 5. 输入直接用 Python `ctypes` 封装 Windows `SendInput`，不依赖过时且多屏行为不完整的 PyDirectInput。
-6. 现有 TypeScript A*、恢复状态机和监控面保留为可复用资产，但新的截图、感知和输入 Worker 使用 Python。
+6. 项目已收口为纯 Python CLI：路线规划、截图、感知、安全输入、采样、标定和评估都在同一个可回放链路中，不再保留 Web/Node 平台。
 
 ## 2. 屏幕采集
 
@@ -49,38 +49,47 @@ DXcam README 的作者自测为 5900X+3090、240Hz 输出、5 次运行，平均
 
 MSS 适合确定性测试窗口、截图诊断和 DXGI 不可用时降级。全屏 Direct3D 或高帧率链路仍以 DXcam 为主。
 
-## 3. 视觉定位与路线
+## 3. GitHub 公开源码审计
 
-### 3.1 BetterGI：最接近的完整参考
+### 3.1 《三角洲行动》相关项目
 
-[BetterGI](https://github.com/babalae/better-genshin-impact/tree/0eb90304c4e4fa1f5cee2a4cbf68de6c8200ec94) commit `0eb9030`，GPL-3.0。它不能被直接复制进当前 MIT/自有实现，但可作为算法与验收参考：
-
-- 地图特征预热、SIFT 全局/局部匹配与上一位置约束：[`SceneBaseMap.cs#L111-L200`](https://github.com/babalae/better-genshin-impact/blob/0eb90304c4e4fa1f5cee2a4cbf68de6c8200ec94/BetterGenshinImpact/GameTask/Common/Map/Maps/Base/SceneBaseMap.cs#L111-L200)。
-- 当前坐标、目标角与距离：[`Navigation.cs#L40-L81`](https://github.com/babalae/better-genshin-impact/blob/0eb90304c4e4fa1f5cee2a4cbf68de6c8200ec94/BetterGenshinImpact/GameTask/AutoPathing/Navigation.cs#L40-L81)。
-- 截图、定位、转向、前进和重定位闭环：[`PathExecutor.cs#L748-L906`](https://github.com/babalae/better-genshin-impact/blob/0eb90304c4e4fa1f5cee2a4cbf68de6c8200ec94/BetterGenshinImpact/GameTask/AutoPathing/PathExecutor.cs#L748-L906)。
-- 卡住后的后退/旋转恢复：[`TrapEscaper.cs#L33-L121`](https://github.com/babalae/better-genshin-impact/blob/0eb90304c4e4fa1f5cee2a4cbf68de6c8200ec94/BetterGenshinImpact/GameTask/AutoPathing/TrapEscaper.cs#L33-L121)。
-
-BetterGI 的小地图尺寸、搜索半径和置信阈值是另一款游戏的经验参数，不能直接声称适用于《三角洲行动》。当前实现只采用“局部优先、连续失败再扩大搜索、仍失败则安全停止”的结构。
-
-### 3.2 可采用或借鉴的辅助项目
-
-| 项目 | 证据 | 用途 | 采用边界 |
+| 项目 | 实际实现 | 对本项目的价值 | 边界 |
 | --- | --- | --- | --- |
-| [EDAutopilot-v2](https://github.com/Matrixchung/EDAutopilot-v2/tree/eaca754278e8ceb432420e53e3f4234b4950e2a8) | [`gameui.py#L173-L222`](https://github.com/Matrixchung/EDAutopilot-v2/blob/eaca754278e8ceb432420e53e3f4234b4950e2a8/gameui.py#L173-L222)、[`utils.py#L123-L151`](https://github.com/Matrixchung/EDAutopilot-v2/blob/eaca754278e8ceb432420e53e3f4234b4950e2a8/utils/utils.py#L123-L151) | HUD 双模板定位、跳变抑制、离散方向修正 | MIT，可借鉴；仓库维护停滞，不作为依赖 |
-| [MaaFramework](https://github.com/MaaXYZ/MaaFramework/tree/76385c8871d8f59c1ca69cd35d8b50b611cd156a) | [`RecognitionTask.cpp#L12-L69`](https://github.com/MaaXYZ/MaaFramework/blob/76385c8871d8f59c1ca69cd35d8b50b611cd156a/source/MaaFramework/Task/RecognitionTask.cpp#L12-L69)、[`ActionTask.cpp#L13-L81`](https://github.com/MaaXYZ/MaaFramework/blob/76385c8871d8f59c1ca69cd35d8b50b611cd156a/source/MaaFramework/Task/ActionTask.cpp#L13-L81) | 识别结果驱动声明式动作 | LGPL-3.0；首版不用其完整框架 |
-| [vis_nav_player](https://github.com/ai4ce/vis_nav_player/tree/90c48e3f1a4bee5de93219fec3344ed8a5c3ebb0) | [`baseline.py#L36-L136`](https://github.com/ai4ce/vis_nav_player/blob/90c48e3f1a4bee5de93219fec3344ed8a5c3ebb0/source/baseline.py#L36-L136)、[`baseline.py#L307-L400`](https://github.com/ai4ce/vis_nav_player/blob/90c48e3f1a4bee5de93219fec3344ed8a5c3ebb0/source/baseline.py#L307-L400) | RootSIFT/VLAD 地点识别、时序图和最短路 | 仓库没有 License 文件，仅作概念验证参考，不复制源码 |
-| [RapidOCR](https://github.com/RapidAI/RapidOCR/tree/44e2e900eccf2ad0702030dce9e20f5c5941be39) | [`README.md#L34-L68`](https://github.com/RapidAI/RapidOCR/blob/44e2e900eccf2ad0702030dce9e20f5c5941be39/README.md#L34-L68) | HUD/交互提示的中英文 OCR | Apache-2.0；真实样本需要时再接入 |
-| [ViZDoom](https://github.com/Farama-Foundation/ViZDoom/tree/748b2c69b0ac51a48629b24b80a8cc1603d12c65) | [`base_gymnasium_env.py#L225-L242`](https://github.com/Farama-Foundation/ViZDoom/blob/748b2c69b0ac51a48629b24b80a8cc1603d12c65/gymnasium_wrapper/base_gymnasium_env.py#L225-L242) | 视觉动作策略与恢复评测原型 | 使用内部 buffer，不能外推外部截图速度或准确率 |
+| [DeltaForceScript `4679841`](https://github.com/BugNotFoundX/DeltaForceScript/tree/46798410d6166abe9faf25810b98037929858391) | DXcam 截图、PaddleOCR 识别倒计时、PyDirectInput 点击市场购买：[`window_capture.py#L26-L47`](https://github.com/BugNotFoundX/DeltaForceScript/blob/46798410d6166abe9faf25810b98037929858391/window_capture.py#L26-L47)、[`main_gui.py#L100-L205`](https://github.com/BugNotFoundX/DeltaForceScript/blob/46798410d6166abe9faf25810b98037929858391/main_gui.py#L100-L205) | 证明已有 Delta 项目公开实现了外部截图、OCR、标准键鼠链路 | 只有市场 UI 自动化，无局内定位/导航；仓库未提供运行成功率；无 License，不复制源码 |
+| [DeltaForceSS `92c33f3`](https://github.com/yi-zelin/DeltaForceSS/tree/92c33f326691cc5d19e560af5dad92cf89b17f00) | DXcam、灰度/Otsu、OCR/模糊匹配、Canny/Hough UI 分割：[`main.py#L189-L257`](https://github.com/yi-zelin/DeltaForceSS/blob/92c33f326691cc5d19e560af5dad92cf89b17f00/main.py#L189-L257)、[`main.py#L304-L358`](https://github.com/yi-zelin/DeltaForceSS/blob/92c33f326691cc5d19e560af5dad92cf89b17f00/main.py#L304-L358)、[`main.py#L468-L503`](https://github.com/yi-zelin/DeltaForceSS/blob/92c33f326691cc5d19e560af5dad92cf89b17f00/main.py#L468-L503) | 固定 ROI 预处理与 OCR 容错可借鉴 | 只有制造/购买；GPL-3.0，不直接拷贝到当前实现 |
+| [GTImaster `91d6579`](https://github.com/screenpandar/GTImaster/tree/91d65794ca6a6bb934d001fb8586cd81ddf995f3) | MSS/EasyOCR，对明显异常的 OCR 数值拒绝操作：[`realtime_mode.py#L115-L267`](https://github.com/screenpandar/GTImaster/blob/91d65794ca6a6bb934d001fb8586cd81ddf995f3/core/realtime_mode.py#L115-L267) | “低置信度不执行”和结果一致性检查 | 只有市场交易；MIT |
+| [delta-force-skill `9c57e13`](https://github.com/doyoulovemeforhi/delta-force-skill/tree/9c57e13f04c1a7c8e86ffe627b9e5c018b543801) | GDI BitBlt 截图、归一化 ROI 多尺度模板、SendInput/PostMessage：[`screenshot.py#L132-L203`](https://github.com/doyoulovemeforhi/delta-force-skill/blob/9c57e13f04c1a7c8e86ffe627b9e5c018b543801/scripts/screenshot.py#L132-L203)、[`recognition.py#L95-L182`](https://github.com/doyoulovemeforhi/delta-force-skill/blob/9c57e13f04c1a7c8e86ffe627b9e5c018b543801/scripts/recognition.py#L95-L182)、[`click.py#L78-L98`](https://github.com/doyoulovemeforhi/delta-force-skill/blob/9c57e13f04c1a7c8e86ffe627b9e5c018b543801/scripts/click.py#L78-L98) | 与当前 Profile 的 ROI/多尺度模板思路一致 | 基地/UI 操作，且会[枚举进程与可执行文件路径](https://github.com/doyoulovemeforhi/delta-force-skill/blob/9c57e13f04c1a7c8e86ffe627b9e5c018b543801/scripts/games/wegame_delta_force.py#L324-L331)；没有读内存，但不符合本项目“不接触进程”的更严边界；无 License |
 
-### 3.3 首版定位策略
+直接命中“跑刀”的 [delta_force_auto_LootRun `fb16bfe`](https://github.com/zdu881/delta_force_auto_LootRun/tree/fb16bfe9f4b118a841a0c57f138a8a20a4c93c66) 并不是可完整审计的开源实现：README 明确说附件来自“自动精灵”，base64 解码后仍有加密：[`README.md#L3-L13`](https://github.com/zdu881/delta_force_auto_LootRun/blob/fb16bfe9f4b118a841a0c57f138a8a20a4c93c66/README.md#L3-L13)。对固定 commit 中 870,461 字节的 [`.zjs` 原文件](https://github.com/zdu881/delta_force_auto_LootRun/blob/fb16bfe9f4b118a841a0c57f138a8a20a4c93c66/%E4%B8%89%E8%A7%92%E6%B4%B2%E5%85%8D%E8%B4%B9%E5%85%A8%E8%87%AA%E5%8A%A8%E8%B7%91%E5%88%80%E5%8F%8C%E6%8E%92%E7%BB%84%E9%98%9F%E7%89%88.zjs) 做结构化读取，可解析出 29 条顶层 JSON 记录、26 个 `linkedFile` 名称和嵌套元数据；嵌套内容共有 82 条换行分隔 JSON，其中 56 条标记为 `type="加密动作"`。因此文件结构、脚本名称和元数据可见，但加密动作 payload 的实际行为无法审计，也没有可复现准确率。
 
-1. 对目标窗口或显示器建立固定分辨率 profile，所有 ROI 用归一化坐标表达。
-2. 受控测试窗口先用高可分离的视觉 anchor 验证完整链路。
-3. 实际固定路线由一组 `route node` 组成；每个节点保存参考帧/ROI、动作、邻接边和置信阈值。
-4. 当前帧先在上次节点附近做 ORB/SIFT 或模板匹配；用 ratio test、RANSAC inlier 和时序连续性拒绝误锁。
-5. 局部搜索失败时扩大候选范围；连续失败进入 `uncertain` 并释放所有按键，不盲走。
-6. 路线使用 waypoint look-ahead 与 A*；首版只覆盖一个固定分辨率、一个地图区域和一条人工录制路线。
-7. 连续画面位移或路线节点进度长期不变时，松开前进键，再执行受限的后退/横移/小角度转向并重新定位。
+该仓库链接的 [Visual-SIFT-Template-Matching-Method `1ca265b`](https://github.com/kongkong985/Visual-SIFT-Template-Matching-Method/tree/1ca265b59d433848421e909c882f109c6912dd5e) 仅包含一个小地图对大地图的 SIFT 示例：KNN + `0.75` ratio test，至少 10 个 good matches 后用 RANSAC homography 转换中心点：[`SIFT 实现#L20-L67`](https://github.com/kongkong985/Visual-SIFT-Template-Matching-Method/blob/1ca265b59d433848421e909c882f109c6912dd5e/%E5%AE%9A%E4%BD%8D%E7%9B%AE%E6%A0%87%E5%9B%BE%E5%83%8F%E5%9C%A8%E6%A8%A1%E6%9D%BF%E5%9B%BE%E5%83%8F%E4%B8%AD%E7%9A%84%E5%9D%90%E6%A0%87%E4%BD%8D%E7%BD%AE_SIFT%E6%A8%A1%E6%9D%BF%E5%8C%B9%E9%85%8D%E6%B3%95.py#L20-L67)。它没有 License，也没检查空 homography、inlier ratio 或时序跳变，只能证明一个简化的定位方向。
+
+因此，在本次检查到的 GitHub 结果中，有《三角洲行动》的截图/OCR/UI 自动化，也有不可审计的加密跑刀附件，但没有找到可审计、可复现的“局内截图定位 → 路线跟踪 → 键鼠闭环”完整开源实现。
+
+### 3.2 其他游戏的导航参考
+
+[BetterGI](https://github.com/babalae/better-genshin-impact/tree/7e30466378d2d951fdb09fd9f9643adc8713d469) commit `7e304663`，GPL-3.0，是最完整的结构参考：
+
+- SIFT 全局/局部匹配，优先搜索上一帧位置附近，失败后回退全局：[`SceneBaseMap.cs#L116-L212`](https://github.com/babalae/better-genshin-impact/blob/7e30466378d2d951fdb09fd9f9643adc8713d469/BetterGenshinImpact/GameTask/Common/Map/Maps/Base/SceneBaseMap.cs#L116-L212)。
+- 持续截图、定位、计算距离和调整朝向：[`PathExecutor.cs#L748-L877`](https://github.com/babalae/better-genshin-impact/blob/7e30466378d2d951fdb09fd9f9643adc8713d469/BetterGenshinImpact/GameTask/AutoPathing/PathExecutor.cs#L748-L877)。
+- 异常位置跳变拒绝、无进展检测和有限脱困：[`TrapEscaper.cs#L33-L121`](https://github.com/babalae/better-genshin-impact/blob/7e30466378d2d951fdb09fd9f9643adc8713d469/BetterGenshinImpact/GameTask/AutoPathing/TrapEscaper.cs#L33-L121)。
+
+[AeronauticaHelper](https://github.com/SSkipr/AeronauticaHelper/tree/7bbb84a379b85a16542e43ffd0065340e15a68a6) commit `7bbb84a`，MIT，补足了闭环转向和恢复策略：用[最短有符号角差和 EWMA 平滑](https://github.com/SSkipr/AeronauticaHelper/blob/7bbb84a379b85a16542e43ffd0065340e15a68a6/AeroHelper/utils/bearing.py#L25-L73)，再以小角度平方根、大角度线性的[连续分段模型叠加油门修正](https://github.com/SSkipr/AeronauticaHelper/blob/7bbb84a379b85a16542e43ffd0065340e15a68a6/AeroHelper/automation/autosteer.py#L164-L194)控制按键时长；另有[距离停滞检测](https://github.com/SSkipr/AeronauticaHelper/blob/7bbb84a379b85a16542e43ffd0065340e15a68a6/AeroHelper/automation/autosteer.py#L257-L280)。它依赖可 OCR 的 HUD 航向/距离，不能直接解决 FPS 场景定位。
+
+| 项目 | 主要用途 | 采用边界 |
+| --- | --- | --- |
+| [EDAutopilot-v2 `eaca754`](https://github.com/Matrixchung/EDAutopilot-v2/tree/eaca754278e8ceb432420e53e3f4234b4950e2a8) | HUD 双模板定位、上一帧跳变抑制、SendInput：[`gameui.py#L173-L226`](https://github.com/Matrixchung/EDAutopilot-v2/blob/eaca754278e8ceb432420e53e3f4234b4950e2a8/gameui.py#L173-L226) | MIT；同时读取游戏官方 Journal，不是纯视觉 |
+| [MaaFramework `76385c8`](https://github.com/MaaXYZ/MaaFramework/tree/76385c8871d8f59c1ca69cd35d8b50b611cd156a) | 识别结果驱动声明式动作 | LGPL-3.0；首版不引入整个框架 |
+| [RapidOCR `44e2e90`](https://github.com/RapidAI/RapidOCR/tree/44e2e900eccf2ad0702030dce9e20f5c5941be39) | HUD/交互提示 OCR | Apache-2.0；真实样本证明需要时再引入 |
+
+### 3.3 当前落地策略
+
+1. 对每个真实固定路线建立独立分辨率 Profile，ROI 用归一化坐标，模板保存 SHA-256，并绑定来源 run ID、帧序号和解码像素哈希。
+2. 人工走一遍以 2～5 FPS 采样，对转角、门、楼梯、分叉和易卡点标注 route position/waypoint。
+3. 当前帧先在上次节点附近搜索；候选置信度不足、发生不合理跳变或连续丢失时释放全部按键，不盲走。
+4. A* 只选择 waypoint 序列；每次输入是有上限的短脉冲，下一帧画面决定是否继续、转向或停止。
+5. 定位长期不前进时只允许有限次数的后退/横移/小角度转向，耗尽恢复预算后安全停止。
+6. 采样时就声明 calibration/validation/blind，Profile 保存标定运行全部帧、感知 ROI、数据集像素内容、`run.json` 和 `manifest.jsonl` 的哈希；评估器拒绝 run ID、整帧或感知 ROI 重用，核对声明帧数，并强制标签 100% 覆盖该数据集。输出 waypoint top-1、距离阈值命中率、pose emission precision/recall/F1、balanced pose emission accuracy、false lock 和只在成功 pose 上统计的位置误差分位数。这些检查用于防止意外混集和子集挑选，不是防恶意篡改的签名系统；blind 独立性仍必须由采样流程保证。
 
 ## 4. 标准输入与安全门
 
@@ -112,21 +121,22 @@ PyDirectInput 只作为源码对照：其主屏绝对坐标实现没有 `MOUSEEV
 
 ## 6. 准确率验证
 
-当前没有任何开源项目能给出可直接迁移到《三角洲行动》的准确率。BetterGI 参数、ViZDoom steps/s、OCR 文档指标和 COCO mAP 都不能外推。
+本次审计到的开源项目中，没有项目给出可直接迁移到《三角洲行动》的准确率。BetterGI 参数、ViZDoom steps/s、OCR 文档指标和 COCO mAP 都不能外推。
 
 实际游戏数据按以下方式建立：
 
-1. 至少录制 30 次完整固定路线，覆盖画质、亮度、动态遮挡和 HUD 状态。
-2. 按“整次运行”切分 calibration / validation / blind test；禁止把相邻帧随机分到不同集合。
+1. 至少录制 30 次完整固定路线，覆盖画质、亮度、动态遮挡和 HUD 状态；每次采样时就写入不可混用的 dataset split。
+2. 按“整次运行”切分 calibration / validation / blind test；禁止把相邻帧随机分到不同集合，也禁止复制标定图片后仅更换 run ID。
 3. 每秒抽 2～5 帧标注路线节点/位置与朝向；转角、门、楼梯、分叉和易卡点全量标注。
 4. 10% 样本双人标注，记录标注分歧。
 
 必须报告：
 
-- 节点 top-1 准确率与相邻节点容忍准确率；
-- 位置误差 median / P90 / P95 / max；
+- waypoint top-1 准确率（按 ID 比较，不用坐标距离冒充节点准确率）；
+- exact position 与距离阈值命中率，以及成功 pose 子集上的位置误差 median / P90 / P95 / max；
 - 朝向误差 MAE / P95；
-- pose 可用率与 false lock；
+- pose emission precision / recall / F1 / balanced accuracy（只表示“是否输出 pose”，不代替 waypoint/位置正确率）、可用率与 false lock；
+- 数据帧数、标签帧数、标签覆盖率、标签文件哈希、数据集像素内容哈希、`run.json` 哈希和帧 manifest 哈希；
 - 丢失后的重定位时间；
 - P50/P95 感知和端到端延迟；
 - 完整路线成功率、人工接管、错分叉、卡住次数与恢复率。
