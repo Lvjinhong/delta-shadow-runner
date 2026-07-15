@@ -1,68 +1,101 @@
 {
-  "project": "Shadow Runner Lab",
-  "version": 5,
+  "project": "Delta External Vision Runner",
+  "version": 6,
   "lastUpdated": "2026-07-15",
   "features": [
     {
-      "id": "route-planning",
-      "description": "从模拟出生点计算到撤离点的最低代价路线",
+      "id": "legacy-simulation-baseline",
+      "category": "legacy",
+      "description": "保留现有 A*、恢复状态机、REST/WebSocket 与监控界面作为重构基线",
       "passes": true,
       "evidence": [
-        "tests/core/graph.test.ts 19/19",
-        "2,000 个随机图与参考 Dijkstra 成本一致"
+        "commit 3f963e7",
+        "Windows 120/120、build、Chromium E2E 已验证"
       ]
     },
     {
-      "id": "recovery-engine",
-      "description": "模拟卡住后进入恢复状态并继续原路线",
-      "passes": true,
-      "evidence": [
-        "tests/core/engine.test.ts 25/25",
-        "独立反例复核覆盖跳点、倒退、连续 stuck 和乱序观测"
-      ]
+      "id": "research-evidence",
+      "category": "research",
+      "description": "完成屏幕采集、视觉定位、OCR、规划和标准输入候选项目的源码级调研与 License 核验",
+      "passes": false,
+      "evidence": []
     },
     {
-      "id": "telemetry-api",
-      "description": "REST 与 WebSocket 提供快照、控制和遥测",
-      "passes": true,
-      "evidence": [
-        "tests/server/app.test.ts 22/22",
-        "编译产物 health、错误 envelope、控制、WebSocket 和关闭流程 smoke 通过"
-      ]
+      "id": "python-foundation",
+      "category": "foundation",
+      "description": "Python Worker 具备锁定依赖、类型配置、结构化日志、配置校验和单元测试入口",
+      "passes": false,
+      "evidence": []
     },
     {
-      "id": "control-dashboard",
-      "description": "Web 控制台展示路线、状态、指标和事件",
-      "passes": true,
-      "evidence": [
-        "tests/web/model.test.ts、api.test.ts、style.test.ts 共 46/46",
-        "SVG 路线、四项控制、WS 握手/重连、capabilities、对比度和可访问性已独立复核 PASS",
-        "Windows Chromium production E2E 验证控制闭环、三档布局、ARIA、键盘操作和 reduced motion，4/4 通过"
-      ]
+      "id": "screen-capture",
+      "category": "capture",
+      "description": "Windows 外部截图 backend 在 1080p 连续 60 秒达到平均至少 20 FPS、P95 不超过 50ms且无尺寸漂移",
+      "passes": false,
+      "evidence": []
     },
     {
-      "id": "windows-verification",
-      "description": "在 Windows 开发机完成安装、测试、构建和 API 冒烟",
-      "passes": true,
-      "evidence": [
-        "Windows 434a697：Node v24.14.0、npm 11.9.0、118/118、typecheck、server+web build",
-        "首次安装、重复跳过、stamp/lock 漂移、npm ls 损坏和 ForceInstall 六条 bootstrap 路径实测通过",
-        "编译产物 smoke 覆盖静态首页、health、snapshot、四项控制、非法控制 400、WebSocket 恢复广播和 SIGTERM 关闭",
-        "清理后工作区干净、端口 4199 无监听、stamp 匹配 lock、npm ls 返回 0"
-      ]
+      "id": "record-replay",
+      "category": "data",
+      "description": "录制帧、时间戳、分辨率和人工动作，并能确定性离线回放同一数据集",
+      "passes": false,
+      "evidence": []
     },
     {
-      "id": "e2e-gate",
-      "description": "在 Windows Chromium 执行完整浏览器 E2E",
-      "passes": true,
-      "evidence": [
-        "Playwright Chromium 149.0.7827.55：4/4 通过，retries=0、workers=1、无 skip",
-        "控制流覆盖启动、暂停、继续、注入卡住、recovering、撤离与重置，使用真实 REST/WebSocket",
-        "1440x900、1024x768、390x844 三档截图与布局断言通过；JUnit tests=4 failures=0 errors=0 skipped=0",
-        "E2E 红灯发现并修复移动端 map.css 加载顺序覆盖断点的问题；修复后全量重跑通过",
-        "独立 evaluator 在 Windows 同一 HEAD 再次只读复跑 4/4 通过，并核对报告与 4 张成功截图已刷新",
-        "结束后端口 4173 无监听、无 Playwright/compiled server 残留进程、Windows 工作区干净"
-      ]
+      "id": "visual-perception",
+      "category": "perception",
+      "description": "从真实截图识别场景状态、HUD或交互提示、方向或视觉锚点，输出置信度和诊断图，并在独立标注集计算指标",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "visual-localization-route",
+      "category": "navigation",
+      "description": "感知结果可定位到固定路线节点或局部位姿，A* 生成目标路线，低置信度或偏航时安全停止或重定位",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "visual-stuck-recovery",
+      "category": "navigation",
+      "description": "根据连续画面或定位进度检测卡住，并在受控用例中 10/10 恢复或安全退出",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "safe-standard-input",
+      "category": "input",
+      "description": "实现 dry-run 与 Windows 标准 SendInput actuator，包含前台窗口守卫、最大按键时长、200ms 急停和人工接管",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "one-click-runtime",
+      "category": "integration",
+      "description": "Windows 一键入口完成依赖、配置、采集和安全自检，重复执行不启动重复 Worker，失败信息可定位",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "controlled-window-e2e",
+      "category": "e2e",
+      "description": "在确定性测试窗口真实跑通截图、识别、规划、标准输入、到达目标和急停，固定路线至少 20/20",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "controlled-game-e2e",
+      "category": "e2e",
+      "description": "在用户授权的受控游戏场景中，以外部截图和标准输入完成至少一条固定路线并保存完整运行证据",
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "release-audit",
+      "category": "release",
+      "description": "本地、GitHub、Windows 提交一致且工作区干净，测试、构建、安全检查、README和运行产物全部经独立审计",
+      "passes": false,
+      "evidence": []
     }
   ]
 }

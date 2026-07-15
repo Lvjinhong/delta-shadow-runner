@@ -1,7 +1,15 @@
 Shadow Runner Lab 进度归档
 更新时间：2026-07-15
-最新功能代码基线：434a697 fix: preserve mobile map breakpoints
+最新已提交代码基线：3f963e7 fix: restore vite development dashboard
 GitHub：https://github.com/Lvjinhong/delta-shadow-runner
+
+[当前重构目标]
+- 用户已明确：最终交付不是 Web 平台，而是 Windows 纯外部视觉脚本。
+- 数据链路限定为：桌面截图 → 视觉识别/定位 → 路线状态机 → Windows 标准键鼠输入 → 卡住恢复与运行日志。
+- 不读取目标进程内存，不注入 DLL，不使用驱动，不实现反作弊规避。
+- 现有 Web Demo 仅作为 A*、恢复状态机、REST/WebSocket 和监控界面的历史基线，不再作为端到端完成证据。
+- 已新增 plan.md 和 feature-list.json v6；所有真实截图、感知、输入与 E2E 功能保持 passes=false，直到满足 Windows 实测阈值。
+- 2026-07-15 本地旧基线复跑：8 个测试文件、120/120 通过。
 
 [已完成]
 - Task 1：项目基线、统一 npm 脚本、TypeScript/Vite/Vitest 配置和 Windows 启动脚本。
@@ -33,7 +41,10 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - Windows 已配置 GitHub origin，但 Windows 自己尚未信任 GitHub Host Key；本轮代码通过已验证 Git bundle 经 win-dev SSH 同步。
 
 [后续规划]
-- 当前实现、Windows 集成和浏览器 E2E 均已完成；后续新增需求继续沿用模拟器/离线数据安全边界。
+- 先完成 GitHub 候选项目 README、License、源码和维护状态的交叉调研，并结合 Windows 环境基线选型。
+- 实施顺序：Python 工程与离线回放 → Windows 截图 → 视觉感知 → 定位/路线 → 安全输入 → 一键启动与监控。
+- E2E 必须先在确定性测试窗口验证截图、识别、规划、输入和急停，再在用户授权的受控游戏场景验证固定路线。
+- 当前外部视觉重构尚未完成；旧模拟器健康检查、黑屏修复或浏览器 E2E 不能替代新的验收项。
 - Windows 直接从 GitHub fetch 仍需用户确认并录入 GitHub Host Key；当前同步链路继续使用已验证 Git bundle + win-dev SSH。
 - GitHub 当前仓库实际为 public；如需 private，应由用户明确确认后再变更可见性。
 
@@ -42,8 +53,9 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - Windows：进入 D:\Work\Work-Project\delta-shadow-runner。
 - 测试：powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode test
 - 构建：powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -Mode build
-- 继续时先重读 docs/superpowers/specs/2026-07-14-shadow-runner-design.md 和 docs/superpowers/plans/2026-07-14-shadow-runner-implementation.md。
+- 继续时先重读 plan.md、feature-list.json 和本文件；旧 design/implementation 文档只作为历史模拟器记录。
 
 [安全边界]
-- 仅使用模拟器、离线回放或 mock 数据。
-- 不读取在线游戏进程，不发送真实键鼠输入，不包含反作弊绕过能力。
+- 允许用户授权的桌面截图、离线回放、确定性测试窗口和 Windows 标准用户态键鼠输入。
+- armed 输入默认关闭，必须通过前台窗口校验、最大按键时长和急停自检后显式开启。
+- 不读取在线游戏进程，不注入或使用驱动，不包含反作弊绕过、自动瞄准、自动射击或战斗决策能力。
