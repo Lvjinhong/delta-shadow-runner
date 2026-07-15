@@ -83,12 +83,31 @@ def _load_user32() -> Any:
     user32.GetClientRect.restype = ctypes.c_int
     user32.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.POINTER(POINT)]
     user32.ClientToScreen.restype = ctypes.c_int
+    if hasattr(user32, "SetProcessDpiAwarenessContext"):
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetProcessDpiAwarenessContext.restype = ctypes.c_int
+    if hasattr(user32, "SetProcessDPIAware"):
+        user32.SetProcessDPIAware.argtypes = []
+        user32.SetProcessDPIAware.restype = ctypes.c_int
     return user32
 
 
 def _last_error() -> int:
     getter = getattr(ctypes, "get_last_error", None)
     return 0 if getter is None else int(getter())
+
+
+def enable_per_monitor_dpi_awareness(*, user32: Any | None = None) -> None:
+    """让窗口客户区坐标与 DXGI 物理像素使用同一坐标系。"""
+
+    native = user32 or _load_user32()
+    setter = getattr(native, "SetProcessDpiAwarenessContext", None)
+    if setter is not None and setter(ctypes.c_void_p(-4)):
+        return
+    fallback = getattr(native, "SetProcessDPIAware", None)
+    if fallback is not None and fallback():
+        return
+    raise OSError(_last_error(), "无法启用进程 DPI Awareness")
 
 
 class Win32NativeGateway:
@@ -159,6 +178,8 @@ def window_client_region(
     """把指定顶层窗口的客户区转换成桌面像素坐标。"""
 
     native = user32 or _load_user32()
+    if user32 is None:
+        enable_per_monitor_dpi_awareness(user32=native)
     window_handle = find_window_handle(window_title, user32=native)
 
     rect = RECT()

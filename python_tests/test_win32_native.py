@@ -10,6 +10,7 @@ from delta_vision.win32_native import (
     KEYEVENTF_SCANCODE,
     MOUSEEVENTF_MOVE,
     Win32NativeGateway,
+    enable_per_monitor_dpi_awareness,
     find_window_handle,
     window_client_region,
 )
@@ -116,6 +117,23 @@ def test_find_window_handle_resolves_exact_title() -> None:
     user32 = FakeUser32()
 
     assert find_window_handle("Delta Vision Test Target", user32=user32) == 123
+
+
+def test_enable_per_monitor_dpi_awareness_uses_v2_context() -> None:
+    class FakeDpiUser32:
+        def __init__(self) -> None:
+            self.context = None
+
+        def SetProcessDpiAwarenessContext(self, context):
+            self.context = context.value
+            return 1
+
+    user32 = FakeDpiUser32()
+
+    enable_per_monitor_dpi_awareness(user32=user32)
+
+    assert user32.context is not None
+    assert user32.context != 0
 
 
 def test_window_client_region_rejects_missing_window() -> None:
