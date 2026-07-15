@@ -10,6 +10,7 @@ from delta_vision.win32_native import (
     KEYEVENTF_SCANCODE,
     MOUSEEVENTF_MOVE,
     Win32NativeGateway,
+    find_window_handle,
     window_client_region,
 )
 
@@ -109,6 +110,12 @@ def test_window_client_region_converts_client_origin_to_screen_coordinates() -> 
     region = window_client_region("Delta Vision Test Target", user32=FakeUser32())
 
     assert (region.left, region.top, region.width, region.height) == (100, 200, 1280, 720)
+
+
+def test_find_window_handle_resolves_exact_title() -> None:
+    user32 = FakeUser32()
+
+    assert find_window_handle("Delta Vision Test Target", user32=user32) == 123
 
 
 def test_window_client_region_rejects_missing_window() -> None:

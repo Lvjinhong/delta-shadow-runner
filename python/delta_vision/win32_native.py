@@ -159,9 +159,7 @@ def window_client_region(
     """把指定顶层窗口的客户区转换成桌面像素坐标。"""
 
     native = user32 or _load_user32()
-    window_handle = native.FindWindowW(None, window_title)
-    if not window_handle:
-        raise LookupError(f'找不到窗口: "{window_title}"')
+    window_handle = find_window_handle(window_title, user32=native)
 
     rect = RECT()
     if not native.GetClientRect(window_handle, ctypes.byref(rect)):
@@ -172,3 +170,15 @@ def window_client_region(
     width = int(rect.right - rect.left)
     height = int(rect.bottom - rect.top)
     return CaptureRegion(int(origin.x), int(origin.y), width, height)
+
+
+def find_window_handle(window_title: str, *, user32: Any | None = None) -> int:
+    """按完整标题解析顶层窗口句柄，用于启动时绑定安全门。"""
+
+    if not window_title:
+        raise ValueError("窗口标题不能为空")
+    native = user32 or _load_user32()
+    window_handle = int(native.FindWindowW(None, window_title) or 0)
+    if not window_handle:
+        raise LookupError(f'找不到窗口: "{window_title}"')
+    return window_handle
