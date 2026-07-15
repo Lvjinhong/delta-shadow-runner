@@ -109,3 +109,14 @@ def test_color_anchor_detector_rejects_zero_confidence_threshold() -> None:
             minimum_area=10,
             confidence_threshold=0,
         )
+
+
+def test_color_anchor_detector_rejects_tolerance_above_byte_range() -> None:
+    with pytest.raises(ValueError, match="颜色容差"):
+        ColorAnchorDetector(
+            label="player",
+            bgr=(0, 255, 0),
+            tolerance=256,
+            minimum_area=10,
+            confidence_threshold=0.9,
+        )

@@ -86,6 +86,10 @@ def test_load_worker_settings_accepts_zero_screen_coordinates(tmp_path) -> None:
             lambda config: config["navigation"].update(max_recovery_attempts="2"),
             "max_recovery_attempts",
         ),
+        (
+            lambda config: config["marker"].update(tolerance=256),
+            "marker.tolerance",
+        ),
     ],
 )
 def test_load_worker_settings_rejects_unsafe_numeric_values(

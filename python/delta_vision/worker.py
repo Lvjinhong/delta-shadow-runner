@@ -134,6 +134,13 @@ def _non_negative_int(value: object, *, field: str) -> int:
     return value
 
 
+def _byte_int(value: object, *, field: str) -> int:
+    parsed = _non_negative_int(value, field=field)
+    if parsed > 255:
+        raise ValueError(f'配置字段 "{field}" 不能超过 255')
+    return parsed
+
+
 def _parse_graph(raw_nodes: object) -> dict[str, RouteNode]:
     nodes = _mapping(raw_nodes, field="nodes")
     graph: dict[str, RouteNode] = {}
@@ -266,7 +273,7 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
             raw.get("max_duration_seconds"), field="max_duration_seconds"
         ),
         marker_bgr=tuple(raw_bgr),
-        marker_tolerance=_non_negative_int(
+        marker_tolerance=_byte_int(
             marker.get("tolerance"), field="marker.tolerance"
         ),
         marker_minimum_area=_positive_int(

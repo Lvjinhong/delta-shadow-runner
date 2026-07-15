@@ -33,8 +33,8 @@ class ColorAnchorDetector:
     ) -> None:
         if not label:
             raise ValueError("锚点标签不能为空")
-        if tolerance < 0:
-            raise ValueError("颜色容差不能为负数")
+        if not 0 <= tolerance <= 255:
+            raise ValueError("颜色容差必须位于 0 到 255 之间")
         if minimum_area <= 0:
             raise ValueError("最小面积必须为正数")
         if not 0 < confidence_threshold <= 1:
