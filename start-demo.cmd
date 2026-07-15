@@ -3,6 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "DEMO_URL=http://localhost:5173"
+set "MODULE_URL=http://localhost:5173/api.ts"
 set "HEALTH_URL=http://127.0.0.1:4173/api/health"
 set "WINDOW_TITLE=Shadow Runner Lab"
 
@@ -38,7 +39,7 @@ start "%WINDOW_TITLE%" powershell.exe -NoLogo -NoExit -NoProfile -ExecutionPolic
 
 echo [Shadow Runner Lab] Waiting for the web and API services...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$ErrorActionPreference = 'SilentlyContinue'; $deadline = (Get-Date).AddSeconds(180); while ((Get-Date) -lt $deadline) { try { $web = Invoke-WebRequest -UseBasicParsing -Uri '%DEMO_URL%' -TimeoutSec 2; $health = Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if ($web.StatusCode -eq 200 -and $web.Content -match '<title>Shadow Runner Lab' -and $health.success -eq $true -and $health.data.status -eq 'ok' -and $health.data.mode -eq 'simulation' -and $health.data.compute -eq 'cpu-only') { exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
+    "$ErrorActionPreference = 'SilentlyContinue'; $deadline = (Get-Date).AddSeconds(180); while ((Get-Date) -lt $deadline) { try { $web = Invoke-WebRequest -UseBasicParsing -Uri '%DEMO_URL%' -TimeoutSec 2; $module = Invoke-WebRequest -UseBasicParsing -Uri '%MODULE_URL%' -TimeoutSec 2; $health = Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if ($web.StatusCode -eq 200 -and $web.Content -match '<title>Shadow Runner Lab' -and $module.StatusCode -eq 200 -and $module.Headers['Content-Type'] -match 'javascript' -and $module.Content -match 'requestSnapshot' -and $health.success -eq $true -and $health.data.status -eq 'ok' -and $health.data.mode -eq 'simulation' -and $health.data.compute -eq 'cpu-only') { exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
 
 if errorlevel 1 (
     echo [Shadow Runner Lab] Startup timed out after 180 seconds.
@@ -53,5 +54,5 @@ exit /b 0
 
 :probe_demo
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$ErrorActionPreference = 'SilentlyContinue'; try { $web = Invoke-WebRequest -UseBasicParsing -Uri '%DEMO_URL%' -TimeoutSec 2; $health = Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if ($web.StatusCode -eq 200 -and $web.Content -match '<title>Shadow Runner Lab' -and $health.success -eq $true -and $health.data.status -eq 'ok' -and $health.data.mode -eq 'simulation' -and $health.data.compute -eq 'cpu-only') { exit 0 } } catch {}; exit 1"
+    "$ErrorActionPreference = 'SilentlyContinue'; try { $web = Invoke-WebRequest -UseBasicParsing -Uri '%DEMO_URL%' -TimeoutSec 2; $module = Invoke-WebRequest -UseBasicParsing -Uri '%MODULE_URL%' -TimeoutSec 2; $health = Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if ($web.StatusCode -eq 200 -and $web.Content -match '<title>Shadow Runner Lab' -and $module.StatusCode -eq 200 -and $module.Headers['Content-Type'] -match 'javascript' -and $module.Content -match 'requestSnapshot' -and $health.success -eq $true -and $health.data.status -eq 'ok' -and $health.data.mode -eq 'simulation' -and $health.data.compute -eq 'cpu-only') { exit 0 } } catch {}; exit 1"
 exit /b %errorlevel%
