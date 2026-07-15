@@ -15,6 +15,9 @@ from delta_vision.template_matching import (
     TemplateWaypointObserver,
 )
 
+# OpenCV 的 SIMD 实现在 macOS/Windows 上会产生约 1e-6 的归一化舍入差异。
+EXACT_MATCH_ABS_TOLERANCE = 1e-5
+
 DEFAULT_ROI = CaptureRegion(20, 10, 120, 80)
 
 
@@ -57,7 +60,9 @@ def test_template_detector_finds_single_anchor_in_global_coordinates() -> None:
     assert observation.bbox == (60, 35, 16, 12)
     assert observation.centroid == pytest.approx((68.0, 41.0))
     assert observation.scale == pytest.approx(1.0)
-    assert observation.confidence == pytest.approx(1.0, abs=1e-6)
+    assert observation.confidence == pytest.approx(
+        1.0, abs=EXACT_MATCH_ABS_TOLERANCE
+    )
 
 
 def test_template_detector_ignores_better_match_outside_roi() -> None:
@@ -129,7 +134,9 @@ def test_template_detector_rejects_two_distinct_equal_matches_as_ambiguous() -> 
     assert observation.scale is None
     assert observation.candidate_centroid is not None
     assert observation.candidate_bbox is not None
-    assert observation.runner_up_confidence == pytest.approx(1.0, abs=1e-6)
+    assert observation.runner_up_confidence == pytest.approx(
+        1.0, abs=EXACT_MATCH_ABS_TOLERANCE
+    )
 
 
 def test_template_detector_rejects_low_score_but_keeps_candidate() -> None:
@@ -301,7 +308,9 @@ def test_template_waypoint_observer_maps_screen_match_to_route_position() -> Non
     )
 
     assert observation.frame_sequence == 7
-    assert observation.confidence == pytest.approx(1.0, abs=1e-6)
+    assert observation.confidence == pytest.approx(
+        1.0, abs=EXACT_MATCH_ABS_TOLERANCE
+    )
     assert observation.centroid == (200.0, 10.0)
     assert observation.waypoint_id == "turn"
 
@@ -519,7 +528,9 @@ def test_template_waypoint_observer_rejects_cross_template_ambiguity() -> None:
         scope=ObservationScope(allowed_waypoint_ids=None),
     )
 
-    assert observation.confidence == pytest.approx(1.0, abs=1e-6)
+    assert observation.confidence == pytest.approx(
+        1.0, abs=EXACT_MATCH_ABS_TOLERANCE
+    )
     assert observation.centroid is None
     assert observation.waypoint_id is None
 
