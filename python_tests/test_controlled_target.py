@@ -97,16 +97,19 @@ def test_controlled_target_arrival_is_sticky() -> None:
 
 
 def test_ground_truth_writer_appends_stable_jsonl(tmp_path) -> None:
-    writer = GroundTruthWriter(tmp_path / "ground-truth.jsonl")
+    path = tmp_path / "ground-truth.jsonl"
+    path.write_text(
+        '{"event":"position","payload":{"arrived":true}}\n',
+        encoding="utf-8",
+    )
+    writer = GroundTruthWriter(path)
 
     writer.write("start", at_ns=1, payload={"x": 10.5, "y": 20.5})
     writer.write("arrived", at_ns=2, payload={"success": True})
 
     records = [
         json.loads(line)
-        for line in (tmp_path / "ground-truth.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert [record["event"] for record in records] == ["start", "arrived"]
     assert records[0]["payload"] == {"x": 10.5, "y": 20.5}

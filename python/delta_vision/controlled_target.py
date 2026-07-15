@@ -98,6 +98,8 @@ class GroundTruthWriter:
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        # 每次目标进程都是独立试次，先清空旧成功记录，避免复用 artifacts 时误判。
+        self._path.write_text("", encoding="utf-8")
 
     def write(self, event: str, *, at_ns: int, payload: Mapping[str, object]) -> None:
         record = {

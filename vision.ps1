@@ -100,14 +100,24 @@ function Wait-ControlledTargetArrival {
     do {
         if (Test-Path -LiteralPath $GroundTruthPath) {
             try {
+                $sawStart = $false
+                $latestTrialArrived = $false
                 foreach ($line in @(Get-Content -LiteralPath $GroundTruthPath -ErrorAction Stop)) {
                     if ([string]::IsNullOrWhiteSpace($line)) {
                         continue
                     }
                     $event = $line | ConvertFrom-Json -ErrorAction Stop
-                    if ($event.payload.arrived -eq $true) {
-                        return $true
+                    if ($event.event -eq "start") {
+                        $sawStart = $true
+                        $latestTrialArrived = $false
+                        continue
                     }
+                    if ($sawStart -and $event.payload.arrived -eq $true) {
+                        $latestTrialArrived = $true
+                    }
+                }
+                if ($latestTrialArrived) {
+                    return $true
                 }
             }
             catch {
