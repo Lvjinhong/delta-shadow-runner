@@ -200,7 +200,7 @@ def test_load_controlled_window_settings_from_json() -> None:
     assert settings.max_duration_seconds == 15
     assert settings.max_key_hold_ms == 250
     assert settings.armed_ready is True
-    assert settings.perception.localization_radius >= GOAL_RADIUS
+    assert settings.perception.localization_radius <= GOAL_RADIUS
 
 
 def test_load_worker_settings_rejects_unknown_schema(tmp_path) -> None:

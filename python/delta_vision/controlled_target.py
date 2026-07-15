@@ -21,9 +21,9 @@ CANVAS_HEIGHT = 600
 START_POSITION = (80.0, 520.0)
 TURN_POSITION = (80.0, 80.0)
 GOAL_POSITION = (700.0, 80.0)
-# 受控目标一旦进入该半径就停止移动；必须小于 Worker 的定位半径，避免目标已冻结
-# 但视觉状态机仍无法归入 goal 的边界死区。
-GOAL_RADIUS = 16.0
+# 触发半径覆盖 Worker 的定位半径；进入后模型会吸附到 goal 中心，避免
+# ground truth 已停止但截图质心仍卡在定位边界外。
+GOAL_RADIUS = 20.0
 
 
 class _Window(Protocol):
@@ -185,6 +185,10 @@ class ControlledTargetModel:
             math.hypot(x - self._goal[0], y - self._goal[1])
             <= self._goal_radius
         )
+        if arrived:
+            # 受控靶场只验证闭环，不模拟惯性；吸附到中心让画面与 ground truth
+            # 在同一个 tick 内共享无歧义的终态。
+            x, y = self._goal
         self._state = TargetState(x, y, arrived)
         return self._state
 

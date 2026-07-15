@@ -229,6 +229,7 @@ def test_controlled_target_arrival_is_sticky() -> None:
     moved_away = model.step(frozenset({"a"}), delta_seconds=0.5, elapsed_ms=50)
 
     assert arrived.arrived is True
+    assert (arrived.x, arrived.y) == (90, 10)
     assert moved_away.arrived is True
 
 
