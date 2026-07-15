@@ -10,8 +10,10 @@ from itertools import pairwise
 from types import MappingProxyType
 from typing import Protocol
 
+import numpy as np
+from numpy.typing import NDArray
+
 from .frames import CapturedFrame
-from .perception import ColorAnchorDetector
 from .planner import RouteNode, find_shortest_path
 
 
@@ -24,6 +26,15 @@ class _Actuator(Protocol):
     def key_up(self, key: str, *, now_ns: int, reason: str | None = None) -> None: ...
 
     def release_all(self, *, now_ns: int, reason: str) -> None: ...
+
+
+class AnchorDetection(Protocol):
+    confidence: float
+    centroid: tuple[float, float] | None
+
+
+class AnchorDetector(Protocol):
+    def detect(self, image: NDArray[np.uint8]) -> AnchorDetection: ...
 
 
 class NavigationStatus(StrEnum):
@@ -43,13 +54,17 @@ class WaypointObservation:
     waypoint_id: str | None
 
 
+class WaypointObservationSource(Protocol):
+    def observe(self, frame: CapturedFrame) -> WaypointObservation: ...
+
+
 class WaypointObserver:
     """把颜色锚点截图离散化为唯一的附近 waypoint。"""
 
     def __init__(
         self,
         *,
-        detector: ColorAnchorDetector,
+        detector: AnchorDetector,
         waypoint_positions: Mapping[str, tuple[float, float]],
         localization_radius: float,
     ) -> None:
@@ -62,7 +77,7 @@ class WaypointObserver:
         self._localization_radius = localization_radius
 
     @property
-    def detector(self) -> ColorAnchorDetector:
+    def detector(self) -> AnchorDetector:
         return self._detector
 
     def observe(self, frame: CapturedFrame) -> WaypointObservation:
@@ -146,7 +161,7 @@ class VisualNavigationController:
         self,
         *,
         graph: Mapping[str, RouteNode],
-        observer: WaypointObserver,
+        observer: WaypointObservationSource,
         actuator: _Actuator,
         goal_node_id: str,
         policy: NavigationPolicy,

@@ -5,9 +5,12 @@ import numpy as np
 import pytest
 
 from delta_vision.config import CaptureRegion
+from delta_vision.frames import CapturedFrame
 from delta_vision.template_matching import (
     MatchDecisionPolicy,
+    RouteTemplate,
     TemplateAnchorDetector,
+    TemplateWaypointObserver,
 )
 
 DEFAULT_ROI = CaptureRegion(20, 10, 120, 80)
@@ -267,6 +270,109 @@ def test_template_detector_rejects_invalid_frame_without_mutating_inputs() -> No
     assert np.array_equal(frame, frame_before)
     with pytest.raises(ValueError, match="待检测截图"):
         detector.detect(np.zeros((120, 180), dtype=np.uint8))
+
+
+def _captured_frame(image: np.ndarray, sequence: int = 7) -> CapturedFrame:
+    image.setflags(write=False)
+    return CapturedFrame(sequence, 1_000_000 + sequence, image, "fixture")
+
+
+def test_template_waypoint_observer_maps_screen_match_to_route_position() -> None:
+    first = _template()
+    second = np.random.default_rng(42).integers(
+        0, 256, size=first.shape, dtype=np.uint8
+    )
+    frame = np.zeros((120, 180, 3), dtype=np.uint8)
+    frame[35:47, 60:76] = first
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("route-01", _detector(first), (200.0, 10.0), "turn"),
+            RouteTemplate("route-02", _detector(second), (300.0, 20.0), None),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+
+    observation = observer.observe(_captured_frame(frame))
+
+    assert observation.frame_sequence == 7
+    assert observation.confidence == pytest.approx(1.0, abs=1e-6)
+    assert observation.centroid == (200.0, 10.0)
+    assert observation.waypoint_id == "turn"
+
+
+def test_template_waypoint_observer_rejects_cross_template_ambiguity() -> None:
+    template = _template()
+    frame = np.zeros((120, 180, 3), dtype=np.uint8)
+    frame[35:47, 60:76] = template
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("left", _detector(template), (100.0, 0.0), "A"),
+            RouteTemplate("right", _detector(template), (200.0, 0.0), "B"),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+
+    observation = observer.observe(_captured_frame(frame))
+
+    assert observation.confidence == pytest.approx(1.0, abs=1e-6)
+    assert observation.centroid is None
+    assert observation.waypoint_id is None
+
+
+def test_template_waypoint_observer_rejects_frame_profile_mismatch() -> None:
+    template = _template()
+    observer = TemplateWaypointObserver(
+        templates=(
+            RouteTemplate("route-01", _detector(template), (100.0, 0.0), "A"),
+        ),
+        expected_frame_size=(180, 120),
+        minimum_template_margin=0.05,
+    )
+
+    observation = observer.observe(
+        _captured_frame(np.zeros((100, 160, 3), dtype=np.uint8))
+    )
+
+    assert observation.confidence == 0
+    assert observation.centroid is None
+    assert observation.waypoint_id is None
+
+
+def test_route_template_and_observer_reject_invalid_profiles() -> None:
+    detector = _detector(_template())
+    with pytest.raises(ValueError, match="ID"):
+        RouteTemplate("", detector, (1.0, 2.0), None)
+    with pytest.raises(ValueError, match="路线坐标"):
+        RouteTemplate("bad", detector, (float("nan"), 2.0), None)
+    with pytest.raises(ValueError, match="waypoint"):
+        RouteTemplate("bad", detector, (1.0, 2.0), "")
+    with pytest.raises(ValueError, match="路线模板"):
+        TemplateWaypointObserver(
+            templates=(),
+            expected_frame_size=(180, 120),
+            minimum_template_margin=0.05,
+        )
+    duplicate = RouteTemplate("duplicate", detector, (1.0, 2.0), None)
+    with pytest.raises(ValueError, match="不能重复"):
+        TemplateWaypointObserver(
+            templates=(duplicate, duplicate),
+            expected_frame_size=(180, 120),
+            minimum_template_margin=0.05,
+        )
+    with pytest.raises(ValueError, match="分辨率"):
+        TemplateWaypointObserver(
+            templates=(RouteTemplate("ok", detector, (1.0, 2.0), None),),
+            expected_frame_size=(0, 120),
+            minimum_template_margin=0.05,
+        )
+    with pytest.raises(ValueError, match="差值"):
+        TemplateWaypointObserver(
+            templates=(RouteTemplate("ok", detector, (1.0, 2.0), None),),
+            expected_frame_size=(180, 120),
+            minimum_template_margin=-0.01,
+        )
 
 
 @pytest.mark.parametrize(

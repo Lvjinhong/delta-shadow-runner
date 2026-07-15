@@ -11,6 +11,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .config import CaptureRegion
+from .frames import CapturedFrame
+from .navigation import WaypointObservation
 
 MatchReason = Literal["accepted", "below_threshold", "ambiguous", "no_candidate"]
 BBox = tuple[int, int, int, int]
@@ -248,4 +250,86 @@ class TemplateAnchorDetector:
             candidate_scale=best.scale,
             accepted=accepted,
             reason=reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RouteTemplate:
+    """把一个截图模板映射到路线画布坐标和可选 waypoint。"""
+
+    template_id: str
+    detector: TemplateAnchorDetector
+    route_position: tuple[float, float]
+    waypoint_id: str | None
+
+    def __post_init__(self) -> None:
+        if not self.template_id:
+            raise ValueError("路线模板 ID 不能为空")
+        if len(self.route_position) != 2 or not all(
+            math.isfinite(value) for value in self.route_position
+        ):
+            raise ValueError("路线坐标必须包含两个有限数")
+        if self.waypoint_id is not None and not self.waypoint_id:
+            raise ValueError("waypoint ID 必须是非空字符串或 null")
+
+
+class TemplateWaypointObserver:
+    """从多个关键帧模板中选择唯一路线位置，拒绝跨模板歧义。"""
+
+    def __init__(
+        self,
+        *,
+        templates: tuple[RouteTemplate, ...],
+        expected_frame_size: tuple[int, int],
+        minimum_template_margin: float,
+    ) -> None:
+        if not templates:
+            raise ValueError("路线模板不能为空")
+        template_ids = tuple(template.template_id for template in templates)
+        if len(set(template_ids)) != len(template_ids):
+            raise ValueError("路线模板 ID 不能重复")
+        if (
+            len(expected_frame_size) != 2
+            or any(type(value) is not int or value <= 0 for value in expected_frame_size)
+        ):
+            raise ValueError("期望帧分辨率必须包含两个正整数")
+        if (
+            not math.isfinite(minimum_template_margin)
+            or not 0 <= minimum_template_margin <= 1
+        ):
+            raise ValueError("跨模板最佳与次佳差值必须位于 0 到 1 之间")
+        self._templates = templates
+        self._expected_frame_size = expected_frame_size
+        self._minimum_template_margin = minimum_template_margin
+
+    def observe(self, frame: CapturedFrame) -> WaypointObservation:
+        actual_size = (int(frame.image.shape[1]), int(frame.image.shape[0]))
+        if actual_size != self._expected_frame_size:
+            return WaypointObservation(
+                frame_sequence=frame.sequence,
+                captured_at_ns=frame.captured_at_ns,
+                confidence=0,
+                centroid=None,
+                waypoint_id=None,
+            )
+        matches = sorted(
+            (
+                (route_template, route_template.detector.detect(frame.image))
+                for route_template in self._templates
+            ),
+            key=lambda item: (-item[1].confidence, item[0].template_id),
+        )
+        best_template, best_match = matches[0]
+        runner_up_score = 0 if len(matches) == 1 else matches[1][1].confidence
+        accepted = (
+            best_match.accepted
+            and best_match.confidence - runner_up_score
+            >= self._minimum_template_margin
+        )
+        return WaypointObservation(
+            frame_sequence=frame.sequence,
+            captured_at_ns=frame.captured_at_ns,
+            confidence=best_match.confidence,
+            centroid=best_template.route_position if accepted else None,
+            waypoint_id=best_template.waypoint_id if accepted else None,
         )
