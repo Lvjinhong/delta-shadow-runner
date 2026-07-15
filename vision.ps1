@@ -88,6 +88,76 @@ function Assert-ArmedConfirmation {
     }
 }
 
+function Wait-ControlledTargetArrival {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$GroundTruthPath,
+
+        [int]$TimeoutMs = 2000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    do {
+        if (Test-Path -LiteralPath $GroundTruthPath) {
+            try {
+                foreach ($line in @(Get-Content -LiteralPath $GroundTruthPath -ErrorAction Stop)) {
+                    if ([string]::IsNullOrWhiteSpace($line)) {
+                        continue
+                    }
+                    $event = $line | ConvertFrom-Json -ErrorAction Stop
+                    if ($event.payload.arrived -eq $true) {
+                        return $true
+                    }
+                }
+            }
+            catch {
+                # 目标窗口可能刚好在追加一行；在超时前继续读取完整 JSONL。
+            }
+        }
+        if ([DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Stop-ControlledTargetProcess {
+    param(
+        [System.Diagnostics.Process]$TargetProcess
+    )
+
+    if ($null -eq $TargetProcess) {
+        return $true
+    }
+    try {
+        $TargetProcess.Refresh()
+        if ($TargetProcess.HasExited) {
+            return $true
+        }
+        $taskkillOutput = & taskkill.exe /PID $TargetProcess.Id /T /F 2>&1
+        $taskkillExitCode = $LASTEXITCODE
+        if ($taskkillExitCode -ne 0) {
+            $TargetProcess.Refresh()
+            if ($TargetProcess.HasExited) {
+                return $true
+            }
+            Write-Warning "受控目标清理失败，taskkill 退出码: $taskkillExitCode；输出: $taskkillOutput"
+            return $false
+        }
+        $exited = $TargetProcess.WaitForExit(2000)
+        $TargetProcess.Refresh()
+        if (-not $exited -or -not $TargetProcess.HasExited) {
+            Write-Warning "受控目标在 taskkill 成功后 2 秒内仍未退出。"
+            return $false
+        }
+        return $true
+    }
+    catch {
+        Write-Warning "复核受控目标退出状态失败: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 $uv = Initialize-PythonEnvironment
 if ($Mode -eq "Setup") {
     Write-Host "[Delta Vision] Python 3.12 and locked dependencies are ready."
@@ -147,6 +217,9 @@ if ($Mode -eq "Armed") {
 }
 
 $targetProcess = $null
+$workerExitCode = 1
+$cleanupSucceeded = $true
+$groundTruthPath = Join-Path $Artifacts "target\target-ground-truth.jsonl"
 try {
     $targetArguments = @(
         "run", "python", "-m", "delta_vision.controlled_target",
@@ -157,12 +230,22 @@ try {
     & $uv run python -m delta_vision.worker `
         --config $configPath --artifacts (Join-Path $Artifacts "worker") "--armed"
     $workerExitCode = $LASTEXITCODE
+    if ($workerExitCode -eq 0 -and -not (Wait-ControlledTargetArrival `
+        -GroundTruthPath $groundTruthPath)) {
+        Write-Warning "Worker 报告到达，但受控目标 ground truth 未确认到达。"
+        $workerExitCode = 3
+    }
 }
 finally {
-    if ($targetProcess -and -not $targetProcess.HasExited) {
-        & taskkill.exe /PID $targetProcess.Id /T /F | Out-Null
+    try {
+        $cleanupSucceeded = Stop-ControlledTargetProcess -TargetProcess $targetProcess
     }
-    $workerMutex.ReleaseMutex()
-    $workerMutex.Dispose()
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+}
+if (-not $cleanupSucceeded) {
+    $workerExitCode = 4
 }
 exit $workerExitCode

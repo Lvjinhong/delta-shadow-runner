@@ -23,6 +23,13 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "delta_vision.worker",
         '"--armed"',
         "taskkill.exe",
+        "Wait-ControlledTargetArrival",
+        "target-ground-truth.jsonl",
+        "$event.payload.arrived -eq $true",
+        "$workerExitCode = 3",
+        "$taskkillExitCode = $LASTEXITCODE",
+        ".WaitForExit(2000)",
+        "$workerExitCode = 4",
     ):
         assert fragment in script, f"vision.ps1 缺少契约片段: {fragment}"
 
