@@ -1,16 +1,16 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 6,
-  "lastUpdated": "2026-07-15",
+  "version": 7,
+  "lastUpdated": "2026-07-16",
   "features": [
     {
-      "id": "legacy-simulation-baseline",
-      "category": "legacy",
-      "description": "保留现有 A*、恢复状态机、REST/WebSocket 与监控界面作为重构基线",
+      "id": "legacy-platform-removed",
+      "category": "scope",
+      "description": "移除 React/Node 模拟平台、浏览器入口和工具链，仓库主线仅保留 Python 外部视觉脚本",
       "passes": true,
       "evidence": [
-        "commit 3f963e7",
-        "Windows 120/120、build、Chromium E2E 已验证"
+        "旧 TypeScript A* 的关键安全回归已迁移到 python_tests/test_planner.py",
+        "Python A* 通过 1000 个固定种子随机图与参考 Dijkstra 差分"
       ]
     },
     {
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：122 项测试、Ruff 与构建通过，总覆盖率 81.40%；A* 与参考 Dijkstra 随机差分 1000/1000"
+        "本机 Python 3.12.12：214 项测试、Ruff 通过，总覆盖率 85.33%；A* 与参考 Dijkstra 随机差分 1000/1000"
       ]
     },
     {

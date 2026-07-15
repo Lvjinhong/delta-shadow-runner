@@ -255,16 +255,7 @@ uv run ruff check python python_tests
 uv build
 ```
 
-旧 TypeScript 模拟器仍保留为历史回归基线：
-
-```bash
-npm ci
-npm test
-npm run typecheck
-npm run build
-```
-
-它不属于外部视觉 Worker 的完成证据。
+仓库是纯 Python CLI，不包含 Node、React、浏览器 Dashboard 或本地 Web 服务。
 
 ## 7. Windows 常见问题
 
@@ -294,10 +285,6 @@ Delta Vision Test Target
 ### `SendInput` 返回 0 或窗口没有响应
 
 确认 Worker 与目标窗口处于相同完整性级别，并检查目标是否真的位于前台。项目不会在标准 `SendInput` 被忽略时升级为驱动、注入或规避方案。
-
-### 双击后旧网页仍出现
-
-不要运行 `start-demo.cmd`。它属于旧模拟 Web Demo。外部视觉入口是 `start-controlled-e2e.cmd`，主程序没有浏览器 URL。
 
 ## 8. 《三角洲行动》适配流程
 
@@ -330,19 +317,7 @@ Delta Vision Test Target
 
 在线使用可能违反目标产品条款并导致账号处罚。请只在你有权控制的环境、账号和受控场景中运行。
 
-## 10. 旧 Web Demo
-
-仓库保留了早期 `Shadow Runner Lab`：React/Vite 页面、Node REST/WebSocket、模拟观测和 TypeScript A*。它可以通过旧 `init.ps1` / `start-demo.cmd` 启动，但只用于历史回归和监控资产复用。
-
-旧页面、HTTP 200、WebSocket 在线、模拟路线完成或浏览器 E2E 都不能替代以下证据：
-
-1. Windows 真实桌面持续截图；
-2. 来自截图的视觉定位；
-3. 真实标准输入返回数量；
-4. 前台切换与急停释放时间；
-5. 独立评估器复跑受控窗口和授权游戏路线。
-
-## 11. 仓库状态
+## 10. 仓库状态
 
 - 重构计划：`plan.md`
 - 逐项验收：`feature-list.json`

@@ -9,9 +9,6 @@ build/
 coverage/
 dist/
 htmlcov/
-node_modules/
 output/
-playwright-report/
-test-results/
 *.log
 .DS_Store
