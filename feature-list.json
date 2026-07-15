@@ -32,8 +32,8 @@
       "evidence": [
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
-        "python/delta_vision 包含不可变配置、确定性回放、颜色感知、A*、dry-run actuator 和 JSONL 事件",
-        "本机 Python 3.12.12：44 项测试与构建通过，覆盖率高于 90%；A* 与参考 Dijkstra 随机差分 1000/1000"
+        "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
+        "本机 Python 3.12.12：122 项测试、Ruff 与构建通过，总覆盖率 81.40%；A* 与参考 Dijkstra 随机差分 1000/1000"
       ]
     },
     {
@@ -41,56 +41,80 @@
       "category": "capture",
       "description": "Windows 外部截图 backend 在 1080p 连续 60 秒达到平均至少 20 FPS、P95 不超过 50ms且无尺寸漂移",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "已实现 DXcam 0.3.0 与 MSS 10.2.0 adapter、BGRA 到独立只读 BGR 帧及 60 秒基准 CLI",
+        "本机 fake backend 单测通过；Windows 可见桌面 60 秒指标尚未执行"
+      ]
     },
     {
       "id": "record-replay",
       "category": "data",
       "description": "录制帧、时间戳、分辨率和人工动作，并能确定性离线回放同一数据集",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "FrameRecorder 保存 PNG、时间戳、分辨率和导航/动作元数据；ReplayFrameSource 校验路径、顺序、解码和尺寸",
+        "本机确定性回放单测通过；Windows 实际采集产物尚未生成"
+      ]
     },
     {
       "id": "visual-perception",
       "category": "perception",
       "description": "从真实截图识别场景状态、HUD或交互提示、方向或视觉锚点，输出置信度和诊断图，并在独立标注集计算指标",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "受控窗口颜色锚点使用 OpenCV 连通域并输出面积、置信度、候选与可执行 centroid",
+        "合成图像准确识别与低置信拒绝已测；Windows 真实截图和独立标注指标尚未执行"
+      ]
     },
     {
       "id": "visual-localization-route",
       "category": "navigation",
       "description": "感知结果可定位到固定路线节点或局部位姿，A* 生成目标路线，低置信度或偏航时安全停止或重定位",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "VisualNavigationController 只接收 CapturedFrame，使用唯一近邻 waypoint、A* 和显式边动作",
+        "独立 evaluator 的 4 帧合成闭环到达、4 帧回放和终态按键清空通过；Windows 黑盒路线尚未执行"
+      ]
     },
     {
       "id": "visual-stuck-recovery",
       "category": "navigation",
       "description": "根据连续画面或定位进度检测卡住，并在受控用例中 10/10 恢复或安全退出",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "卡住信号来自 centroid 到下一 waypoint 的距离无进展；timer 只能释放，不能无截图生成恢复输入",
+        "有限恢复单测通过；Windows 卡住场景 10/10 尚未执行"
+      ]
     },
     {
       "id": "safe-standard-input",
       "category": "input",
       "description": "实现 dry-run 与 Windows 标准 SendInput actuator，包含前台窗口守卫、最大按键时长、200ms 急停和人工接管",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "已实现 dry-run 与 user32 SendInput scan-code adapter，检查插入数、标题+HWND、F12、独立 daemon watchdog、释放失败后台重试、generation 隔离和异常释放",
+        "fake user32 安全单测通过；Windows 真实 SendInput、前台切换与 200ms 急停尚未执行"
+      ]
     },
     {
       "id": "one-click-runtime",
       "category": "integration",
       "description": "Windows 一键入口完成依赖、配置、采集和安全自检，重复执行不启动重复 Worker，失败信息可定位",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "vision.ps1 与 start-controlled-e2e.cmd 已实现固定 uv 版本、Python 3.12、uv.lock frozen sync、单实例互斥、显式 armed 确认、ground truth 终态复核与目标进程清理复核",
+        "PowerShell/launcher 契约测试通过；Windows PowerShell 5.1 实际启动尚未执行"
+      ]
     },
     {
       "id": "controlled-window-e2e",
       "category": "e2e",
       "description": "在确定性测试窗口真实跑通截图、识别、规划、标准输入、到达目标和急停，固定路线至少 20/20",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "独立 evaluator 复跑本地合成闭环：arrived、4 帧录制/回放、pressed_keys 为空、低置信 key_down=0",
+        "Windows 主机 192.168.3.7 当前离线，真实 DXcam/MSS + SendInput 路线 20/20 尚未执行"
+      ]
     },
     {
       "id": "controlled-game-e2e",

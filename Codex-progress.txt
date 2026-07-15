@@ -1,7 +1,21 @@
 Shadow Runner Lab 进度归档
 更新时间：2026-07-15
-最新已提交代码基线：3f963e7 fix: restore vite development dashboard
+最新功能实现基线：4d6446f fix: isolate controlled e2e trials
 GitHub：https://github.com/Lvjinhong/delta-shadow-runner
+
+[外部视觉重构：本地实现检查点]
+- 本地 main 已完成外部视觉实现和审查修复；本归档提交后推送 GitHub main，并以远端 commit 回读为准。
+- 新增 DXcam/MSS 截图 adapter、FrameRecorder/ReplayFrameSource、颜色锚点、视觉 waypoint/A*、非阻塞脉冲、视觉卡住恢复和 Win32 SendInput 安全层。
+- 新增独立 Tk 受控窗口、60 秒截图 benchmark、Windows runtime、vision.ps1 和 start-controlled-e2e.cmd；主入口不再依赖网页或 Node 服务。
+- 真实输入安全门同时绑定完整窗口标题和启动 HWND；F12 急停、独立 daemon watchdog 硬性按键时长、SendInput 插入数和异常 release_all 均有单测。
+- Worker 与受控目标会在创建窗口/解析客户区前启用 Per-Monitor DPI Aware V2，使路线坐标与 DXGI 物理像素一致。
+- 本机 Python 3.12.12：122 项测试通过，总覆盖率 81.40%，Ruff、wheel/sdist 构建通过。
+- 旧 Node 回归：120/120、typecheck、server/web build 通过；npm audit 为 0 漏洞。
+- Python 锁定依赖经 uv export 后使用 pip-audit --disable-pip --no-deps 扫描，结果为 No known vulnerabilities found。
+- 三轮独立 code review 的反例均已按 TDD 修复并复验：输入 watchdog 不再被前台检查锁阻塞、失败后独立重试并以 generation 隔离旧 timer；受控 E2E 清空旧 ground truth 并只接受最新 start 之后的到达；颜色容差限制在 0..255；taskkill 失败或残留进程改变最终退出码。
+- 独立 evaluator 实测本地 4 帧合成闭环：arrived、录制 4 帧、回放 4 帧、终态 pressed_keys 为空；持续低置信时 key_down=0 并因重定位超时安全停止。
+- Windows 真实桌面尚未验收：192.168.3.7 当前 ICMP/SSH 22 均不可达。DXcam/MSS 60 秒指标、PowerShell 5.1 一键入口、真实 SendInput、前台切换/F12 <=200ms、受控路线 20/20 和卡住 10/10 全部保持未通过。
+- 《三角洲行动》固定地图路线尚未采样、标定和运行；没有宣称游戏成功率。
 
 [当前重构目标]
 - 用户已明确：最终交付不是 Web 平台，而是 Windows 纯外部视觉脚本。
@@ -60,9 +74,9 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - Windows 已配置 GitHub origin，但 Windows 自己尚未信任 GitHub Host Key；本轮代码通过已验证 Git bundle 经 win-dev SSH 同步。
 
 [后续规划]
-- 先完成 GitHub 候选项目 README、License、源码和维护状态的交叉调研，并结合 Windows 环境基线选型。
-- 实施顺序：Python 工程与离线回放 → Windows 截图 → 视觉感知 → 定位/路线 → 安全输入 → 一键启动与监控。
-- E2E 必须先在确定性测试窗口验证截图、识别、规划、输入和急停，再在用户授权的受控游戏场景验证固定路线。
+- GitHub 候选项目的 README、License、源码和维护状态调研已完成，外部视觉 Worker、本地回放、视觉路线、安全输入和一键入口已实现。
+- 下一步必须在 Windows 交互桌面运行 60 秒截图基准、PowerShell 5.1 入口、受控路线 20/20、卡住 10/10、前台切换/F12 20 次时延测试。
+- 受控窗口通过后，再采集用户授权的游戏固定路线截图，做标定和独立运行集评估；未采样前不宣称《三角洲行动》准确率。
 - 当前外部视觉重构尚未完成；旧模拟器健康检查、黑屏修复或浏览器 E2E 不能替代新的验收项。
 - Windows 直接从 GitHub fetch 仍需用户确认并录入 GitHub Host Key；当前同步链路继续使用已验证 Git bundle + win-dev SSH。
 - GitHub 当前仓库实际为 public；如需 private，应由用户明确确认后再变更可见性。
