@@ -1,6 +1,6 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 7,
+  "version": 8,
   "lastUpdated": "2026-07-16",
   "features": [
     {
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：214 项测试、Ruff 通过，总覆盖率 85.33%；A* 与参考 Dijkstra 随机差分 1000/1000"
+        "本机 Python 3.12.12：382 项测试、Ruff 通过，总覆盖率 87.73%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000"
       ]
     },
     {
@@ -52,8 +52,8 @@
       "description": "录制帧、时间戳、分辨率和人工动作，并能确定性离线回放同一数据集",
       "passes": false,
       "evidence": [
-        "FrameRecorder 保存 PNG、时间戳、分辨率和导航/动作元数据；ReplayFrameSource 校验路径、顺序、解码和尺寸",
-        "本机确定性回放单测通过；Windows 实际采集产物尚未生成"
+        "FrameRecorder 保存 PNG、时间戳、分辨率、导航元数据和独立 input-events.jsonl；ReplayFrameSource 校验路径、顺序、解码和尺寸",
+        "本机正常结束、无下一帧超时、截图异常和慢截图/watchdog 并发的确定性回放通过；Windows 实际采集产物尚未生成"
       ]
     },
     {
@@ -62,8 +62,8 @@
       "description": "从真实截图识别场景状态、HUD或交互提示、方向或视觉锚点，输出置信度和诊断图，并在独立标注集计算指标",
       "passes": false,
       "evidence": [
-        "受控窗口颜色锚点使用 OpenCV 连通域并输出面积、置信度、候选与可执行 centroid",
-        "合成图像准确识别与低置信拒绝已测；Windows 真实截图和独立标注指标尚未执行"
+        "受控窗口颜色锚点和游戏路线多尺度模板匹配均输出置信度、歧义拒绝与可执行路线位置",
+        "已实现 calibration/blind 数据隔离、标签全覆盖、precision/recall/F1、false-lock 与位置误差评估；Windows 真实截图和独立标注指标尚未执行"
       ]
     },
     {
@@ -72,8 +72,8 @@
       "description": "感知结果可定位到固定路线节点或局部位姿，A* 生成目标路线，低置信度或偏航时安全停止或重定位",
       "passes": false,
       "evidence": [
-        "VisualNavigationController 只接收 CapturedFrame，使用唯一近邻 waypoint、A* 和显式边动作",
-        "独立 evaluator 的 4 帧合成闭环到达、4 帧回放和终态按键清空通过；Windows 黑盒路线尚未执行"
+        "VisualNavigationController 只接收 CapturedFrame，使用模板路线位置、waypoint、A* 和显式边动作；每条边一次相对鼠标转向并重复有界按键脉冲",
+        "独立 10-Gate evaluator 的合成闭环、回放、低置信、恢复、终态和 watchdog 并发全部通过；Windows 黑盒路线尚未执行"
       ]
     },
     {
@@ -92,8 +92,8 @@
       "description": "实现 dry-run 与 Windows 标准 SendInput actuator，包含前台窗口守卫、最大按键时长、200ms 急停和人工接管",
       "passes": false,
       "evidence": [
-        "已实现 dry-run 与 user32 SendInput scan-code adapter，检查插入数、标题+HWND、F12、独立 daemon watchdog、释放失败后台重试、generation 隔离和异常释放",
-        "fake user32 安全单测通过；Windows 真实 SendInput、前台切换与 200ms 急停尚未执行"
+        "已实现 dry-run 与 user32 SendInput scan-code/相对鼠标 adapter，检查插入数、标题+HWND、F12、独立 daemon watchdog、释放失败后台重试、generation 隔离和异常释放",
+        "schema v2 armed_ready 默认关闭；fake user32 与独立 10-Gate 安全验收通过；Windows 真实 SendInput、前台切换与 200ms 急停尚未执行"
       ]
     },
     {
@@ -102,8 +102,8 @@
       "description": "Windows 一键入口完成依赖、配置、采集和安全自检，重复执行不启动重复 Worker，失败信息可定位",
       "passes": false,
       "evidence": [
-        "vision.ps1 与 start-controlled-e2e.cmd 已实现固定 uv 版本、Python 3.12、uv.lock frozen sync、单实例互斥、显式 armed 确认、ground truth 终态复核与目标进程清理复核",
-        "PowerShell/launcher 契约测试通过；Windows PowerShell 5.1 实际启动尚未执行"
+        "vision.ps1 与 start-game-route.cmd 已实现 Setup、Sample、Calibrate、Evaluate、DryRun、Armed、固定依赖和双重 armed 确认；start-controlled-e2e.cmd 保留为受控自检",
+        "PowerShell/launcher 配置契约测试通过；Windows PowerShell 5.1 实际启动尚未执行"
       ]
     },
     {

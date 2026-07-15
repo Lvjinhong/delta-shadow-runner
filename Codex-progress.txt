@@ -14,30 +14,31 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - Python A* 新增 1000 轮固定种子随机图与参考 Dijkstra 差分；修复极端坐标下 `0 * inf` 产生 NaN 导致错误选路，以及累计代价溢出错误缺少具体边的问题。
 - 新增多尺度 OpenCV 模板匹配：固定 ROI、NMS、阈值、空间歧义拒绝、跨模板歧义拒绝和路线坐标映射。
 - 新增可追溯模板 Profile：固定分辨率、命名 ROI、模板/manifest SHA-256、来源 run/sequence、路径逃逸保护、单次字节哈希与解码、无可用缩放比例拒绝。
-- 模板 Profile 专项 45 项测试，statement/branch coverage 100%。
-- 本机完整 Python 回归：214 项测试通过，总覆盖率 85.33%，Ruff 通过。
+- 新增人工路线 calibration/validation/blind 采样、流式标定和独立评估；拒绝 run、整帧和感知 ROI 泄漏，并强制 100% 标签覆盖。
+- Worker 已接入 template profile schema v2、抽象路线位置、waypoint/A*、每条边一次相对鼠标转向和重复有界按键脉冲。
+- replay 新增独立 input-events.jsonl；正常结束、无下一帧超时、异常退出和慢截图/watchdog 并发均保留输入顺序。
+- 本机完整 Python 回归：382 项测试通过，总覆盖率 87.73%，Ruff、sdist/wheel build 与独立 10-Gate 控制链验收通过。
 
 [已经具备]
 - DXcam 0.3.0 主截图 backend、MSS 10.2.0 回退 backend。
 - PNG/JSONL 录制、确定性 Replay、结构化事件与截图性能基准。
 - 颜色锚点受控测试、模板锚点、waypoint/A*、非阻塞短脉冲和有限卡住恢复。
 - dry-run 与 Win32 SendInput，完整窗口标题 + HWND 前台守卫、F12 急停、独立按键释放 watchdog。
-- Windows 依赖安装和受控窗口一键入口：vision.ps1、start-controlled-e2e.cmd。
+- Windows 依赖安装、游戏路线工作流和一键入口：vision.ps1、start-game-route.cmd、start-controlled-e2e.cmd。
+- vision.ps1 已提供 Sample、Calibrate、Evaluate、DryRun、Armed；schema v2 armed 默认由 armed_ready=false 阻断。
 - GitHub/官方文档源码调研：docs/research/2026-07-15-external-vision-options.md。
 
 [尚未完成，不能宣称通过]
-- Worker 仍需接入 template profile schema v2；当前可运行配置仍是受控绿色锚点。
-- 尚未提供游戏截图采样、ROI/模板标定、标签校验和离线指标 CLI。
 - 尚无《三角洲行动》真实截图、独立 blind set、precision/recall/F1 或固定路线成功率。
-- Windows 主机 192.168.3.7 最近一次严格 publickey-only 探测返回 No route to host；当前未完成真实交互桌面截图、PowerShell 5.1、SendInput、F12 <=200ms、受控路线 20/20 或游戏路线 E2E。
+- Windows 主机 192.168.3.7 在 2026-07-16 最新 ping 仍为 100% 丢包；当前未完成真实交互桌面截图、PowerShell 5.1、SendInput、F12 <=200ms、受控路线 20/20 或游戏路线 E2E。
 - feature-list.json 中相关功能继续保持 passes=false。
 
 [下一步]
-1. 完成纯 Python 平台清理提交并验证 sdist/wheel 不含 Node/React 残留。
-2. 扩展 Worker 配置，接入 template profile 和模板 observer。
-3. 实现只读截图采样、ROI/模板标定、按整次 run 切分的离线指标工具。
-4. 生成一个合成但完整可复跑的数据集，跑通 sample/calibrate/evaluate/replay dry-run E2E。
-5. Windows 上线后，从交互桌面采集真实游戏固定路线，标定后跑 blind test 与受控 armed E2E。
+1. 提交并推送当前 README、游戏路线一键入口和 armed_ready 安全门。
+2. Windows 主机上线后，在交互桌面运行 Setup 与 60 秒 DXcam/MSS 基准。
+3. 采集同一固定路线的 calibration 与独立 blind 运行，按 README 生成标签、Profile 和 metrics。
+4. 先跑 game dry-run，再跑受控窗口 20/20、F12 <=200ms，最后在授权游戏场景跑固定路线 armed E2E。
+5. 根据真实 blind metrics 与完整路线结果调整 ROI、模板、mouse_dx/dy 和状态机阈值，不凭单次成功宣称准确率。
 
 [恢复命令]
 - 本机：cd /Users/bytedance/.codex/tmp/delta-shadow-runner
@@ -45,7 +46,7 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 测试：uv run pytest -q
 - 静态检查：uv run ruff check python python_tests
 - 构建：uv build
-- Windows：进入 D:\Work\Work-Project\delta-shadow-runner 后按 README 运行 vision.ps1 或 .cmd 入口。
+- Windows：进入 D:\Work\Work-Project\delta-shadow-runner 后按 README 运行 vision.ps1；实际路线入口为 start-game-route.cmd，受控自检为 start-controlled-e2e.cmd。
 
 [验收边界]
 - 合成图、受控 Tk 窗口和离线回放只能证明管线行为，不能证明《三角洲行动》准确率。
