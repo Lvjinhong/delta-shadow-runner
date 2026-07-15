@@ -6,6 +6,7 @@ import pytest
 
 from delta_vision.actuator import DryRunActuator
 from delta_vision.config import CaptureRegion
+from delta_vision.controlled_target import GOAL_RADIUS
 from delta_vision.events import JsonlEventWriter
 from delta_vision.frames import CapturedFrame, FrameRecorder, ReplayFrameSource
 from delta_vision.navigation import NavigationStatus
@@ -49,6 +50,7 @@ def test_load_controlled_window_settings_from_json() -> None:
     assert settings.marker_bgr == (0, 255, 0)
     assert settings.max_duration_seconds == 15
     assert settings.max_key_hold_ms == 250
+    assert settings.localization_radius <= GOAL_RADIUS
 
 
 def test_load_worker_settings_rejects_unknown_schema(tmp_path) -> None:

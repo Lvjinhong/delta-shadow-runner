@@ -18,6 +18,7 @@ CANVAS_HEIGHT = 600
 START_POSITION = (80.0, 520.0)
 TURN_POSITION = (80.0, 80.0)
 GOAL_POSITION = (700.0, 80.0)
+GOAL_RADIUS = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +132,7 @@ def run_window(*, artifacts: Path, ignore_input_ms: int) -> int:
         start=START_POSITION,
         goal=GOAL_POSITION,
         marker_radius=10,
-        goal_radius=20,
+        goal_radius=GOAL_RADIUS,
         speed_px_per_second=420,
         ignore_input_ms=ignore_input_ms,
     )
@@ -158,10 +159,10 @@ def run_window(*, artifacts: Path, ignore_input_ms: int) -> int:
         width=5,
     )
     goal = canvas.create_oval(
-        GOAL_POSITION[0] - 20,
-        GOAL_POSITION[1] - 20,
-        GOAL_POSITION[0] + 20,
-        GOAL_POSITION[1] + 20,
+        GOAL_POSITION[0] - GOAL_RADIUS,
+        GOAL_POSITION[1] - GOAL_RADIUS,
+        GOAL_POSITION[0] + GOAL_RADIUS,
+        GOAL_POSITION[1] + GOAL_RADIUS,
         fill="#ffd400",
         outline="",
     )

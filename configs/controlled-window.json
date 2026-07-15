@@ -12,7 +12,7 @@
     "minimum_area": 200,
     "confidence_threshold": 0.9
   },
-  "localization_radius": 32,
+  "localization_radius": 18,
   "goal_node_id": "goal",
   "nodes": {
     "start": {
