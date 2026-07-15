@@ -567,23 +567,81 @@ def run_control_loop(
                 break
             sleep_fn(loop_interval_ms / 1_000)
         ended_at_ns = clock_ns()
-        return ControlLoopResult(
+        result = ControlLoopResult(
             status=snapshot.status,
             frame_count=frame_count,
             duration_ns=max(0, ended_at_ns - started_at_ns),
             reason=snapshot.reason,
         )
-    except BaseException:
-        controller.stop(now_ns=clock_ns(), reason="Worker 异常，执行安全停止")
-        _persist_new_input_events(
-            actuator=actuator,
-            input_event_cursor=input_event_cursor,
-            recorder=recorder,
-            event_writer=event_writer,
-        )
+    except BaseException as error:
+        stopped_at_ns = clock_ns()
+        cleanup_errors: list[str] = []
+        stopped_status: str | None = None
+        try:
+            stopped = controller.stop(
+                now_ns=stopped_at_ns,
+                reason="Worker 异常，执行安全停止",
+            )
+            stopped_status = str(stopped.status)
+        except BaseException as cleanup_error:
+            cleanup_errors.append(
+                "controller.stop: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        try:
+            _persist_new_input_events(
+                actuator=actuator,
+                input_event_cursor=input_event_cursor,
+                recorder=recorder,
+                event_writer=event_writer,
+            )
+        except BaseException as cleanup_error:
+            cleanup_errors.append(
+                "persist_input_events: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        try:
+            source.close()
+        except BaseException as cleanup_error:
+            cleanup_errors.append(
+                f"source.close: {type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        try:
+            pressed_keys: list[str] | None = sorted(actuator.pressed_keys)
+        except BaseException as cleanup_error:
+            pressed_keys = None
+            cleanup_errors.append(
+                "actuator.pressed_keys: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        # 异常可能发生在没有按键可释放的时刻；单独落盘终态，避免只靠 stderr
+        # 推断急停或前台窗口闸门是否真正生效。
+        error_payload: dict[str, object] = {
+            "status": stopped_status,
+            "exception_type": type(error).__name__,
+            "error": str(error),
+            "pressed_keys": pressed_keys,
+        }
+        if cleanup_errors:
+            error_payload = {**error_payload, "cleanup_errors": cleanup_errors}
+        try:
+            event_writer.write(
+                RuntimeEvent(
+                    event_type="runtime_error",
+                    at_ns=stopped_at_ns,
+                    payload=error_payload,
+                )
+            )
+        except BaseException as cleanup_error:
+            cleanup_errors.append(
+                "event_writer.write: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        for cleanup_error in cleanup_errors:
+            error.add_note(f"异常清理阶段失败: {cleanup_error}")
         raise
-    finally:
-        source.close()
+    source.close()
+    return result
 
 
 def run_windows_worker(

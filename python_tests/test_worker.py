@@ -726,6 +726,60 @@ def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path)
         "key_down",
         "key_up",
     ]
+    assert events[-1] == {
+        "at_ns": 20_000_000,
+        "event_type": "runtime_error",
+        "payload": {
+            "error": "capture failed",
+            "exception_type": "RuntimeError",
+            "pressed_keys": [],
+            "status": "stopped",
+        },
+        "schema_version": 1,
+    }
+
+
+def test_control_loop_preserves_original_error_when_safety_stop_also_fails(
+    tmp_path,
+) -> None:
+    class FailingSource(FakeFrameSource):
+        def grab(self):
+            raise ValueError("original-capture")
+
+    class FailingStopController:
+        def stop(self, *, now_ns: int, reason: str):
+            raise RuntimeError("secondary-stop")
+
+    source = FailingSource([])
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+    clock = iter([0, 0, 10_000_000])
+
+    with pytest.raises(ValueError, match="original-capture") as raised:
+        run_control_loop(
+            source=source,
+            controller=FailingStopController(),
+            actuator=actuator,
+            recorder=FrameRecorder(tmp_path / "replay"),
+            event_writer=JsonlEventWriter(tmp_path / "events.jsonl"),
+            clock_ns=lambda: next(clock),
+            sleep_fn=lambda _: None,
+            loop_interval_ms=20,
+            max_duration_seconds=15,
+        )
+
+    assert source.closed is True
+    assert any("secondary-stop" in note for note in raised.value.__notes__)
+    runtime_error = json.loads(
+        (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert runtime_error["event_type"] == "runtime_error"
+    assert runtime_error["payload"] == {
+        "cleanup_errors": ["controller.stop: RuntimeError: secondary-stop"],
+        "error": "original-capture",
+        "exception_type": "ValueError",
+        "pressed_keys": [],
+        "status": None,
+    }
 
 
 class FakeGateway:
