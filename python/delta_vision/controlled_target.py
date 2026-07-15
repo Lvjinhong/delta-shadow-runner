@@ -10,6 +10,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from .win32_native import enable_per_monitor_dpi_awareness
+
 WINDOW_TITLE = "Delta Vision Test Target"
 CANVAS_WIDTH = 800
 CANVAS_HEIGHT = 600
@@ -118,6 +120,7 @@ class GroundTruthWriter:
 def run_window(*, artifacts: Path, ignore_input_ms: int) -> int:
     """启动独立 Tk 窗口；模块层不导入 Tk，保证无桌面环境也能跑单测。"""
 
+    enable_per_monitor_dpi_awareness()
     import tkinter as tk
 
     artifacts.mkdir(parents=True, exist_ok=True)

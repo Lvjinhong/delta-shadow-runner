@@ -1,9 +1,23 @@
 import json
+from pathlib import Path
 
 from delta_vision.controlled_target import (
     ControlledTargetModel,
     GroundTruthWriter,
 )
+
+
+def test_controlled_target_enables_dpi_awareness_before_importing_tkinter() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "python"
+        / "delta_vision"
+        / "controlled_target.py"
+    ).read_text(encoding="utf-8")
+
+    assert source.index("enable_per_monitor_dpi_awareness()") < source.index(
+        "import tkinter as tk"
+    )
 
 
 def test_controlled_target_moves_with_wasd_and_clamps_to_canvas() -> None:
