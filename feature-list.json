@@ -17,8 +17,12 @@
       "id": "research-evidence",
       "category": "research",
       "description": "完成屏幕采集、视觉定位、OCR、规划和标准输入候选项目的源码级调研与 License 核验",
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "docs/research/2026-07-15-external-vision-options.md",
+        "固定 commit 核验 DXcam、MSS、OpenCV、BetterGI、EDAutopilot、MaaFramework、RapidOCR 与 vis_nav_player 的源码和 License",
+        "Windows publickey-only 只读基线确认真实显示器、GPU、游戏安装、DXGI 能力与 SSH 非交互桌面限制"
+      ]
     },
     {
       "id": "python-foundation",

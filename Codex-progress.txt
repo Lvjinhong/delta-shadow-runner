@@ -11,6 +11,16 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 已新增 plan.md 和 feature-list.json v6；所有真实截图、感知、输入与 E2E 功能保持 passes=false，直到满足 Windows 实测阈值。
 - 2026-07-15 本地旧基线复跑：8 个测试文件、120/120 通过。
 
+[外部视觉重构：Research 已完成]
+- 源码调研已固化到 docs/research/2026-07-15-external-vision-options.md；每个主要结论均链接到固定 commit 和关键代码行。
+- 采集选型：DXcam 0.3.0 主路径，MSS 10.2.0 兼容性兜底；OpenCV 仅负责后处理。
+- 输入选型：直接封装 Win32 SendInput，检查返回事件数；前台窗口、最大按键时长、急停与 release_all 为强制安全门。
+- 定位首版：固定 ROI + 模板/局部特征 + 上次节点约束 + waypoint/A*；真实样本证明不足前不引入 YOLO/RL。
+- BetterGI 的完整视觉定位/路径/恢复链路只作研究参考；因 GPL-3.0 不复制源码。无 License 的 vis_nav_player 同样不复制。
+- Windows 只读基线：Windows 11 25H2、RTX 4070 Ti SUPER 16GB、2560×1440@240Hz，游戏与 WeGame 已安装。
+- Windows 当前无可用 Python/uv；SSH 位于 WinDisc 虚拟桌面且截图探针失败，真实采集和输入 E2E 必须在交互桌面启动。
+- 准确率必须使用按整次运行切分的独立标注集；当前没有宣称《三角洲行动》成功率。
+
 [已完成]
 - Task 1：项目基线、统一 npm 脚本、TypeScript/Vite/Vitest 配置和 Windows 启动脚本。
 - Task 2：A* 路径规划；19 项测试通过，并用 2,000 个随机图与参考 Dijkstra 对照通过。
