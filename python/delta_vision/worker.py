@@ -86,6 +86,7 @@ class ColorAnchorSettings:
 class WorkerSettings:
     target_window_title: str
     capture_backend: str
+    armed_ready: bool
     emergency_virtual_key: int
     max_key_hold_ms: int
     loop_interval_ms: int
@@ -319,9 +320,13 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
     )
     if policy.pulse_ms > max_key_hold_ms:
         raise ValueError("navigation.pulse_ms 不能超过 max_key_hold_ms")
+    armed_ready = raw.get("armed_ready", schema_version == 1)
+    if type(armed_ready) is not bool:
+        raise ValueError('配置字段 "armed_ready" 必须是布尔值')
     return WorkerSettings(
         target_window_title=title,
         capture_backend=backend,
+        armed_ready=armed_ready,
         emergency_virtual_key=emergency_virtual_key,
         max_key_hold_ms=max_key_hold_ms,
         loop_interval_ms=_positive_int(
@@ -383,6 +388,11 @@ def build_windows_runtime(
     mss_factory: Callable[[CaptureRegion], _FrameSource] = MssFrameSource,
     gateway_factory: Callable[[], Win32NativeGateway] = Win32NativeGateway,
 ) -> WindowsRuntime:
+    if armed and not settings.armed_ready:
+        raise ValueError(
+            "模板路线尚未确认可 armed；完成标定、blind 评估和 dry-run 后，"
+            "将配置 armed_ready 设为 true"
+        )
     allowed_keys = {
         action.key for action in settings.policy.edge_actions.values()
     } | set(settings.policy.recovery_keys)

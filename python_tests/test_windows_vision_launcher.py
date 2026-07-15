@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -10,7 +11,10 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
 
     assert raw.startswith(b"\xef\xbb\xbf")
     for fragment in (
-        '[ValidateSet("Setup", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]',
+        (
+            '[ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", '
+            '"TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]'
+        ),
         "winget.exe install --id astral-sh.uv -e",
         "https://astral.sh/uv/0.11.28/install.ps1",
         "python install 3.12",
@@ -21,6 +25,10 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "delta_vision.benchmark",
         '"--duration", "60"',
         "delta_vision.worker",
+        "delta_vision.sample_frames",
+        "delta_vision.calibrate_templates",
+        "delta_vision.evaluate_templates",
+        '"--split"',
         '"--armed"',
         "taskkill.exe",
         "Wait-ControlledTargetArrival",
@@ -47,3 +55,35 @@ def test_controlled_e2e_cmd_requires_explicit_confirmation() -> None:
     assert "-Mode ControlledE2E" in script
     assert "-ConfirmArmed" in script
     assert "start-demo.cmd" not in script
+
+
+def test_game_route_cmd_defaults_to_dry_run_and_double_confirms_armed() -> None:
+    script = (PROJECT_ROOT / "start-game-route.cmd").read_text(encoding="utf-8")
+
+    assert "configs\\game-route.json" in script
+    assert "configs\\game-route.example.json" in script
+    assert "profiles\\route-01\\templates.json" in script
+    assert "choice /C DAQ" in script
+    assert "choice /C YN" in script
+    assert "-Mode DryRun" in script
+    assert "-Mode Armed" in script
+    assert "-ConfirmArmed" in script
+    assert "F12" in script
+
+
+def test_game_route_example_is_safe_template_profile_config() -> None:
+    config = json.loads(
+        (PROJECT_ROOT / "configs" / "game-route.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert config["schema_version"] == 2
+    assert config["armed_ready"] is False
+    assert config["target_window_title"] == "三角洲行动"
+    assert config["perception"]["mode"] == "template"
+    assert config["perception"]["template_profile"] == "../profiles/route-01/templates.json"
+    assert config["goal_node_id"] in config["nodes"]
+    assert config["edge_actions"]
+    assert all(type(action["mouse_dx"]) is int for action in config["edge_actions"])
+    assert all(type(action["mouse_dy"]) is int for action in config["edge_actions"])

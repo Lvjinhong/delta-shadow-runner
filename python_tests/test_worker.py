@@ -121,6 +121,7 @@ def _write_template_worker_fixture(
     profile_path.write_text(json.dumps(profile), encoding="utf-8")
     worker = {
         "schema_version": 2,
+        "armed_ready": True,
         "target_window_title": "三角洲行动",
         "capture_backend": "dxcam",
         "emergency_virtual_key": 123,
@@ -195,6 +196,7 @@ def test_load_controlled_window_settings_from_json() -> None:
     assert settings.perception.bgr == (0, 255, 0)
     assert settings.max_duration_seconds == 15
     assert settings.max_key_hold_ms == 250
+    assert settings.armed_ready is True
     assert settings.perception.localization_radius <= GOAL_RADIUS
 
 
@@ -231,8 +233,46 @@ def test_load_worker_settings_v2_resolves_template_profile_relative_to_config(
     assert settings.target_window_title == "三角洲行动"
     assert settings.perception.frame_size == (180, 120)
     assert settings.perception.source_run_ids == frozenset({"calibration-run-01"})
+    assert settings.armed_ready is True
     action = settings.policy.edge_actions[("start", "goal")]
     assert (action.key, action.mouse_dx, action.mouse_dy) == ("w", 320, -12)
+
+
+def test_template_route_requires_explicit_armed_readiness_before_capture(tmp_path) -> None:
+    config_path, _, _ = _write_template_worker_fixture(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["armed_ready"] = False
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    settings = load_worker_settings(config_path)
+
+    with pytest.raises(ValueError, match="armed_ready"):
+        build_windows_runtime(
+            settings,
+            artifacts=tmp_path / "artifacts",
+            armed=True,
+            region_resolver=lambda _: pytest.fail("未确认路线不能初始化截图"),
+        )
+
+
+def test_template_route_defaults_armed_readiness_to_false(tmp_path) -> None:
+    config_path, _, _ = _write_template_worker_fixture(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    del config["armed_ready"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    settings = load_worker_settings(config_path)
+
+    assert settings.armed_ready is False
+
+
+def test_load_worker_settings_rejects_non_boolean_armed_readiness(tmp_path) -> None:
+    config_path, _, _ = _write_template_worker_fixture(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["armed_ready"] = "yes"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="armed_ready"):
+        load_worker_settings(config_path)
 
 
 @pytest.mark.parametrize(

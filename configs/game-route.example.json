@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "armed_ready": false,
+  "target_window_title": "三角洲行动",
+  "capture_backend": "dxcam",
+  "emergency_virtual_key": 123,
+  "max_key_hold_ms": 250,
+  "loop_interval_ms": 20,
+  "max_duration_seconds": 180,
+  "perception": {
+    "mode": "template",
+    "template_profile": "../profiles/route-01/templates.json"
+  },
+  "goal_node_id": "goal",
+  "nodes": {
+    "start": {
+      "x": 0,
+      "y": 0,
+      "edges": [{"target": "turn", "cost": 1}]
+    },
+    "turn": {
+      "x": 100,
+      "y": 0,
+      "edges": [{"target": "goal", "cost": 1}]
+    },
+    "goal": {
+      "x": 200,
+      "y": 0,
+      "edges": []
+    }
+  },
+  "edge_actions": [
+    {
+      "source": "start",
+      "target": "turn",
+      "key": "w",
+      "mouse_dx": 0,
+      "mouse_dy": 0
+    },
+    {
+      "source": "turn",
+      "target": "goal",
+      "key": "w",
+      "mouse_dx": 0,
+      "mouse_dy": 0
+    }
+  ],
+  "navigation": {
+    "pulse_ms": 80,
+    "min_progress_px": 5,
+    "stuck_after_ms": 1200,
+    "localization_timeout_ms": 1200,
+    "max_recovery_attempts": 2,
+    "recovery_keys": ["s", "a"],
+    "arrival_confirmations": 3
+  }
+}

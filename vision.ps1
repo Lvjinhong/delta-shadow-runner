@@ -1,11 +1,39 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Setup", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]
+    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E")]
     [string]$Mode = "DryRun",
 
     [string]$Config = "configs/controlled-window.json",
 
     [string]$Artifacts,
+
+    [string]$WindowTitle = "三角洲行动",
+
+    [ValidateSet("dxcam", "mss")]
+    [string]$Backend = "dxcam",
+
+    [ValidateSet("calibration", "validation", "blind")]
+    [string]$Split = "calibration",
+
+    [string]$Dataset,
+
+    [string]$Labels,
+
+    [string]$ProfilePath,
+
+    [string]$RunId,
+
+    [ValidateRange(1, 86400)]
+    [double]$Duration = 120,
+
+    [ValidateRange(2, 5)]
+    [int]$SampleFps = 5,
+
+    [ValidateRange(0, 60)]
+    [double]$StartDelay = 5,
+
+    [ValidateRange(0.001, 1000000)]
+    [double]$DistanceTolerance = 25,
 
     [switch]$ConfirmArmed
 )
@@ -174,15 +202,57 @@ if ($Mode -eq "Setup") {
     exit 0
 }
 
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+if (-not $Artifacts) {
+    $Artifacts = Join-Path $PSScriptRoot "artifacts\runs\$timestamp"
+}
+
+if ($Mode -eq "Sample") {
+    if (-not $Dataset) {
+        $Dataset = Join-Path $PSScriptRoot "artifacts\datasets\$timestamp-$Split"
+    }
+    if (-not $RunId) {
+        $RunId = "route-$timestamp-$Split"
+    }
+    $sampleArguments = @(
+        "run", "python", "-m", "delta_vision.sample_frames",
+        "--window-title", $WindowTitle,
+        "--backend", $Backend,
+        "--output", $Dataset,
+        "--run-id", $RunId,
+        "--split", $Split,
+        "--duration", $Duration,
+        "--fps", $SampleFps,
+        "--start-delay", $StartDelay
+    )
+    & $uv @sampleArguments
+    exit $LASTEXITCODE
+}
+
+if ($Mode -eq "Calibrate") {
+    if (-not $Dataset -or -not $Labels -or -not $ProfilePath) {
+        throw "Calibrate 必须提供 -Dataset、-Labels 和 -ProfilePath（输出目录）。"
+    }
+    & $uv run python -m delta_vision.calibrate_templates `
+        --dataset $Dataset --labels $Labels --output $ProfilePath
+    exit $LASTEXITCODE
+}
+
+if ($Mode -eq "Evaluate") {
+    if (-not $Dataset -or -not $Labels -or -not $ProfilePath) {
+        throw "Evaluate 必须提供 -Dataset、-Labels 和 -ProfilePath（templates.json）。"
+    }
+    & $uv run python -m delta_vision.evaluate_templates `
+        --profile $ProfilePath --dataset $Dataset --labels $Labels `
+        --output $Artifacts --split $Split --distance-tolerance $DistanceTolerance
+    exit $LASTEXITCODE
+}
+
 $configPath = Join-Path $PSScriptRoot $Config
 if (-not (Test-Path -LiteralPath $configPath)) {
     throw "找不到 Worker 配置: $configPath"
 }
 
-if (-not $Artifacts) {
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $Artifacts = Join-Path $PSScriptRoot "artifacts\runs\$timestamp"
-}
 New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
 
 if ($Mode -eq "TestTarget") {
