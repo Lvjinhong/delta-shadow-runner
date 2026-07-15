@@ -209,6 +209,39 @@ def test_frame_recorder_does_not_append_manifest_when_image_write_fails(tmp_path
     assert not manifest.exists() or manifest.read_text(encoding="utf-8") == ""
 
 
+def test_frame_recorder_records_ordered_input_stream_without_frames(tmp_path) -> None:
+    recorder = FrameRecorder(tmp_path)
+
+    recorder.record_input_event(at_ns=100, payload={"kind": "mouse_move", "dx": 20})
+    recorder.record_input_event(at_ns=100, payload={"kind": "key_down", "key": "w"})
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "input-events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["sequence"] for record in records] == [0, 1]
+    assert [record["payload"]["kind"] for record in records] == [
+        "mouse_move",
+        "key_down",
+    ]
+
+
+@pytest.mark.parametrize("at_ns", [-1, True])
+def test_frame_recorder_rejects_invalid_input_timestamp(tmp_path, at_ns) -> None:
+    recorder = FrameRecorder(tmp_path)
+
+    with pytest.raises(ValueError, match="时间戳"):
+        recorder.record_input_event(at_ns=at_ns, payload={"kind": "key_down"})
+
+
+def test_frame_recorder_rejects_input_timestamp_going_backwards(tmp_path) -> None:
+    recorder = FrameRecorder(tmp_path)
+    recorder.record_input_event(at_ns=100, payload={"kind": "key_down"})
+
+    with pytest.raises(ValueError, match="时间戳"):
+        recorder.record_input_event(at_ns=99, payload={"kind": "key_up"})
+
+
 def test_replay_rejects_manifest_resolution_mismatch(tmp_path) -> None:
     image = np.zeros((4, 5, 3), dtype=np.uint8)
     assert cv2.imwrite(str(tmp_path / "frame.png"), image)

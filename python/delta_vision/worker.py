@@ -463,6 +463,32 @@ def _input_event_payload(event: _InputEvent) -> dict[str, object]:
     }
 
 
+def _persist_new_input_events(
+    *,
+    actuator: _Actuator,
+    input_event_cursor: int,
+    recorder: FrameRecorder,
+    event_writer: JsonlEventWriter,
+) -> tuple[int, list[dict[str, object]]]:
+    current_input_events = actuator.events
+    new_input_events = current_input_events[input_event_cursor:]
+    input_payloads = [_input_event_payload(event) for event in new_input_events]
+    for event, input_payload in zip(
+        new_input_events,
+        input_payloads,
+        strict=True,
+    ):
+        recorder.record_input_event(at_ns=event.at_ns, payload=input_payload)
+        event_writer.write(
+            RuntimeEvent(
+                event_type="input",
+                at_ns=event.at_ns,
+                payload=input_payload,
+            )
+        )
+    return len(current_input_events), input_payloads
+
+
 def run_control_loop(
     *,
     source: _FrameSource,
@@ -493,25 +519,13 @@ def run_control_loop(
                     snapshot = controller.on_timer(now_ns=now_ns)
                 else:
                     snapshot = controller.on_frame(frame, now_ns=now_ns)
-            current_input_events = actuator.events
-            new_input_events = current_input_events[input_event_cursor:]
-            input_event_cursor = len(current_input_events)
-            input_payloads = [
-                _input_event_payload(event) for event in new_input_events
-            ]
+            input_event_cursor, input_payloads = _persist_new_input_events(
+                actuator=actuator,
+                input_event_cursor=input_event_cursor,
+                recorder=recorder,
+                event_writer=event_writer,
+            )
             pending_replay_input_payloads.extend(input_payloads)
-            for event, input_payload in zip(
-                new_input_events,
-                input_payloads,
-                strict=True,
-            ):
-                event_writer.write(
-                    RuntimeEvent(
-                        event_type="input",
-                        at_ns=event.at_ns,
-                        payload=input_payload,
-                    )
-                )
             if frame is not None:
                 payload = _snapshot_payload(
                     snapshot, pressed_keys=actuator.pressed_keys
@@ -540,6 +554,12 @@ def run_control_loop(
         )
     except BaseException:
         controller.stop(now_ns=clock_ns(), reason="Worker 异常，执行安全停止")
+        _persist_new_input_events(
+            actuator=actuator,
+            input_event_cursor=input_event_cursor,
+            recorder=recorder,
+            event_writer=event_writer,
+        )
         raise
     finally:
         source.close()

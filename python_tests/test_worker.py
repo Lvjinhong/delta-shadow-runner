@@ -27,6 +27,16 @@ from delta_vision.worker import (
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "controlled-window.json"
 
 
+def _replay_input_kinds(replay_directory: Path) -> list[str]:
+    records = [
+        json.loads(line)
+        for line in (replay_directory / "input-events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    return [record["payload"]["kind"] for record in records]
+
+
 def _frame(sequence: int, x: int, y: int) -> CapturedFrame:
     image = np.zeros((600, 800, 3), dtype=np.uint8)
     image[y - 10 : y + 10, x - 10 : x + 10] = (0, 255, 0)
@@ -426,6 +436,37 @@ def test_control_loop_records_mouse_and_key_events_in_replay_and_event_log(
         "key_down",
         "key_up",
     ]
+    assert _replay_input_kinds(tmp_path / "replay") == [
+        "mouse_move",
+        "key_down",
+        "key_up",
+    ]
+
+
+def test_control_loop_persists_terminal_input_without_a_following_frame(tmp_path) -> None:
+    settings = load_worker_settings(CONFIG_PATH)
+    actuator = DryRunActuator(
+        allowed_keys={"w", "a", "s", "d"},
+        max_key_hold_ms=250,
+    )
+    controller = build_navigation_controller(settings, actuator=actuator)
+    source = FakeFrameSource([_frame(0, 80, 520), None])
+    clock = iter([0, 0, 100_000_000, 200_000_000, 300_000_000])
+
+    result = run_control_loop(
+        source=source,
+        controller=controller,
+        actuator=actuator,
+        recorder=FrameRecorder(tmp_path / "replay"),
+        event_writer=JsonlEventWriter(tmp_path / "events.jsonl"),
+        clock_ns=lambda: next(clock),
+        sleep_fn=lambda _: None,
+        loop_interval_ms=20,
+        max_duration_seconds=0.2,
+    )
+
+    assert result.status is NavigationStatus.STOPPED
+    assert _replay_input_kinds(tmp_path / "replay") == ["key_down", "key_up"]
 
 
 def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None:
@@ -503,6 +544,15 @@ def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path)
 
     assert source.closed is True
     assert actuator.pressed_keys == frozenset()
+    assert _replay_input_kinds(tmp_path / "replay") == ["key_down", "key_up"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["payload"]["kind"] for event in events if event["event_type"] == "input"] == [
+        "key_down",
+        "key_up",
+    ]
 
 
 class FakeGateway:

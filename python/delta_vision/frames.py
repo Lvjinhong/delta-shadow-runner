@@ -86,10 +86,45 @@ class FrameRecorder:
         self._directory = Path(directory)
         self._frames_directory = self._directory / "frames"
         self._manifest = self._directory / "manifest.jsonl"
+        self._input_events = self._directory / "input-events.jsonl"
         self._frames_directory.mkdir(parents=True, exist_ok=True)
         self._image_writer = image_writer
         self._previous_sequence = -1
         self._previous_captured_at_ns = -1
+        self._previous_input_at_ns = -1
+        self._input_event_sequence = 0
+
+    def record_input_event(
+        self,
+        *,
+        at_ns: int,
+        payload: Mapping[str, object],
+    ) -> None:
+        """独立记录输入事件，不要求事件后面必须还有截图。"""
+        if (
+            type(at_ns) is not int
+            or at_ns < 0
+            or at_ns < self._previous_input_at_ns
+        ):
+            raise ValueError("回放输入事件时间戳必须是单调非递减的非负整数")
+        record = {
+            "schema_version": 1,
+            "sequence": self._input_event_sequence,
+            "at_ns": at_ns,
+            "payload": dict(payload),
+        }
+        serialized = json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._input_events.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(serialized)
+            stream.write("\n")
+        self._previous_input_at_ns = at_ns
+        self._input_event_sequence += 1
 
     def record(
         self,
