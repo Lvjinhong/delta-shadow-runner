@@ -56,6 +56,8 @@ class _Actuator(Protocol):
 
     def release_all(self, *, now_ns: int, reason: str) -> None: ...
 
+    def expire_overdue(self, *, now_ns: int) -> tuple[str, ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class WorkerSettings:
@@ -401,6 +403,7 @@ def run_control_loop(
             if now_ns - started_at_ns >= max_duration_seconds * 1_000_000_000:
                 snapshot = controller.stop(now_ns=now_ns, reason="Worker 运行超时")
                 break
+            actuator.expire_overdue(now_ns=now_ns)
             frame = source.grab()
             if frame is None:
                 snapshot = controller.on_timer(now_ns=now_ns)

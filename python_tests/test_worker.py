@@ -149,6 +149,49 @@ def test_control_loop_reaches_goal_from_screenshot_frames_and_records_replay(
     assert events[-1]["payload"]["pressed_keys"] == []
 
 
+def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None:
+    settings = load_worker_settings(CONFIG_PATH)
+
+    class TrackingActuator(DryRunActuator):
+        def __init__(self) -> None:
+            super().__init__(
+                allowed_keys={"w", "a", "s", "d"},
+                max_key_hold_ms=250,
+            )
+            self.expiry_checks: list[int] = []
+
+        def expire_overdue(self, *, now_ns: int) -> tuple[str, ...]:
+            self.expiry_checks.append(now_ns)
+            return super().expire_overdue(now_ns=now_ns)
+
+    actuator = TrackingActuator()
+    controller = build_navigation_controller(settings, actuator=actuator)
+    source = FakeFrameSource(
+        [
+            _frame(0, 80, 520),
+            _frame(1, 80, 80),
+            _frame(2, 700, 80),
+            _frame(3, 700, 80),
+        ]
+    )
+    clock = iter([0, 0, 100_000_000, 200_000_000, 250_000_000, 300_000_000])
+
+    result = run_control_loop(
+        source=source,
+        controller=controller,
+        actuator=actuator,
+        recorder=FrameRecorder(tmp_path / "replay"),
+        event_writer=JsonlEventWriter(tmp_path / "events.jsonl"),
+        clock_ns=lambda: next(clock),
+        sleep_fn=lambda _: None,
+        loop_interval_ms=20,
+        max_duration_seconds=15,
+    )
+
+    assert result.status is NavigationStatus.ARRIVED
+    assert actuator.expiry_checks == [0, 100_000_000, 200_000_000, 250_000_000]
+
+
 def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path) -> None:
     settings = load_worker_settings(CONFIG_PATH)
     actuator = DryRunActuator(

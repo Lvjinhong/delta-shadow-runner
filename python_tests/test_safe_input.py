@@ -36,7 +36,39 @@ class FakeGateway:
         return self.inserted_count
 
 
-def _actuator(gateway: FakeGateway) -> Win32InputActuator:
+class FakeTimer:
+    def __init__(self, interval_seconds: float, callback) -> None:
+        self.interval_seconds = interval_seconds
+        self._callback = callback
+        self.started = False
+        self.cancelled = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        self._callback()
+
+
+class FakeTimerFactory:
+    def __init__(self) -> None:
+        self.timers: list[FakeTimer] = []
+
+    def __call__(self, interval_seconds: float, callback) -> FakeTimer:
+        timer = FakeTimer(interval_seconds, callback)
+        self.timers.append(timer)
+        return timer
+
+
+def _actuator(
+    gateway: FakeGateway,
+    *,
+    timer_factory: FakeTimerFactory | None = None,
+    clock_ns=lambda: 999_000_000,
+) -> Win32InputActuator:
     gate = SafetyGate(
         target_window_title="Delta Vision Test Target",
         target_window_handle=123,
@@ -48,6 +80,8 @@ def _actuator(gateway: FakeGateway) -> Win32InputActuator:
         max_key_hold_ms=250,
         gate=gate,
         gateway=gateway,
+        clock_ns=clock_ns,
+        timer_factory=timer_factory or FakeTimerFactory(),
     )
 
 
@@ -156,6 +190,28 @@ def test_win32_actuator_expires_overdue_keys() -> None:
     assert expired == ("d",)
     assert gateway.sent[-1] == ("key", 0x20, True)
     assert actuator.pressed_keys == frozenset()
+
+
+def test_watchdog_releases_key_without_waiting_for_control_loop() -> None:
+    gateway = FakeGateway()
+    timers = FakeTimerFactory()
+    actuator = _actuator(
+        gateway,
+        timer_factory=timers,
+        clock_ns=lambda: 251_000_000,
+    )
+
+    actuator.key_down("w", now_ns=1_000_000)
+
+    assert len(timers.timers) == 1
+    assert timers.timers[0].interval_seconds == pytest.approx(0.25)
+    assert timers.timers[0].started is True
+
+    timers.timers[0].fire()
+
+    assert gateway.sent == [("key", 0x11, False), ("key", 0x11, True)]
+    assert actuator.pressed_keys == frozenset()
+    assert actuator.events[-1].reason == "看门狗超过最大按键时长"
 
 
 def test_expire_overdue_attempts_every_release_after_one_failure() -> None:
