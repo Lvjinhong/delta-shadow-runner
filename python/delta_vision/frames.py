@@ -15,6 +15,12 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from .jsonl_io import (
+    append_jsonl_record,
+    load_jsonl_records,
+    repair_trailing_partial_record,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CapturedFrame:
@@ -93,14 +99,41 @@ class FrameRecorder:
         self._previous_captured_at_ns = -1
         self._previous_input_at_ns = -1
         self._input_event_sequence = 0
+        self._input_event_ids: set[str] = set()
+        self._load_input_event_state()
+
+    def _load_input_event_state(self) -> None:
+        self._input_event_ids.clear()
+        self._previous_input_at_ns = -1
+        self._input_event_sequence = 0
+        for record in load_jsonl_records(self._input_events):
+            sequence = record.get("sequence")
+            at_ns = record.get("at_ns")
+            if type(sequence) is int and sequence >= 0:
+                self._input_event_sequence = max(
+                    self._input_event_sequence,
+                    sequence + 1,
+                )
+            if type(at_ns) is int and at_ns >= 0:
+                self._previous_input_at_ns = max(self._previous_input_at_ns, at_ns)
+            event_id = record.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                self._input_event_ids.add(event_id)
 
     def record_input_event(
         self,
         *,
         at_ns: int,
         payload: Mapping[str, object],
+        event_id: str | None = None,
     ) -> None:
         """独立记录输入事件，不要求事件后面必须还有截图。"""
+        if event_id is not None and (
+            not isinstance(event_id, str) or not event_id
+        ):
+            raise ValueError("输入事件 ID 必须是非空字符串")
+        if event_id is not None and event_id in self._input_event_ids:
+            return
         if (
             type(at_ns) is not int
             or at_ns < 0
@@ -113,6 +146,8 @@ class FrameRecorder:
             "at_ns": at_ns,
             "payload": dict(payload),
         }
+        if event_id is not None:
+            record["event_id"] = event_id
         serialized = json.dumps(
             record,
             allow_nan=False,
@@ -120,11 +155,23 @@ class FrameRecorder:
             sort_keys=True,
             separators=(",", ":"),
         )
-        with self._input_events.open("a", encoding="utf-8", newline="\n") as stream:
-            stream.write(serialized)
-            stream.write("\n")
+        try:
+            append_jsonl_record(self._input_events, serialized)
+        except BaseException as error:
+            # close/flush 可能在完整追加后才报错；恢复序号和时间水位后再传播原异常。
+            try:
+                repair_trailing_partial_record(self._input_events)
+                self._load_input_event_state()
+            except BaseException as recovery_error:
+                error.add_note(
+                    "恢复 replay JSONL 时失败: "
+                    f"{type(recovery_error).__name__}: {recovery_error}"
+                )
+            raise
         self._previous_input_at_ns = at_ns
         self._input_event_sequence += 1
+        if event_id is not None:
+            self._input_event_ids.add(event_id)
 
     def record(
         self,

@@ -431,6 +431,18 @@ class VisualMenuController:
         self._streak.clear()
         return self._snapshot()
 
+    def stop(self, reason: str) -> MenuControllerSnapshot:
+        """由外层运行时显式终止，并保留首次终态原因。"""
+
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("停止原因必须是非空字符串")
+        if self._status in {
+            MenuControllerStatus.STOPPED,
+            MenuControllerStatus.COMPLETED,
+        }:
+            return self._snapshot()
+        return self._stop(reason)
+
     def _record_streak(self, observation: SceneObservation) -> None:
         if not observation.accepted or observation.scene is MenuScene.UNKNOWN:
             self._streak.clear()

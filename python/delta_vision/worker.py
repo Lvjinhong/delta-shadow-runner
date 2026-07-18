@@ -28,6 +28,7 @@ from .navigation import (
 )
 from .perception import ColorAnchorDetector
 from .planner import RouteEdge, RouteNode
+from .runtime_events import persist_new_input_events
 from .safe_input import SafetyGate, Win32InputActuator
 from .template_profile import TemplateProfile, load_template_profile
 from .win32_native import (
@@ -53,21 +54,12 @@ class _FrameSource(Protocol):
     def close(self) -> None: ...
 
 
-class _InputEvent(Protocol):
-    kind: str
-    at_ns: int
-    key: str | None
-    dx: int | None
-    dy: int | None
-    reason: str | None
-
-
 class _Actuator(Protocol):
     @property
     def pressed_keys(self) -> frozenset[str]: ...
 
     @property
-    def events(self) -> tuple[_InputEvent, ...]: ...
+    def events(self) -> tuple[object, ...]: ...
 
     def release_all(self, *, now_ns: int, reason: str) -> None: ...
 
@@ -471,43 +463,6 @@ def _snapshot_payload(
     }
 
 
-def _input_event_payload(event: _InputEvent) -> dict[str, object]:
-    return {
-        "kind": event.kind,
-        "at_ns": event.at_ns,
-        "key": event.key,
-        "dx": event.dx,
-        "dy": event.dy,
-        "reason": event.reason,
-    }
-
-
-def _persist_new_input_events(
-    *,
-    actuator: _Actuator,
-    input_event_cursor: int,
-    recorder: FrameRecorder,
-    event_writer: JsonlEventWriter,
-) -> tuple[int, list[dict[str, object]]]:
-    current_input_events = actuator.events
-    new_input_events = current_input_events[input_event_cursor:]
-    input_payloads = [_input_event_payload(event) for event in new_input_events]
-    for event, input_payload in zip(
-        new_input_events,
-        input_payloads,
-        strict=True,
-    ):
-        recorder.record_input_event(at_ns=event.at_ns, payload=input_payload)
-        event_writer.write(
-            RuntimeEvent(
-                event_type="input",
-                at_ns=event.at_ns,
-                payload=input_payload,
-            )
-        )
-    return len(current_input_events), input_payloads
-
-
 def run_control_loop(
     *,
     source: _FrameSource,
@@ -543,7 +498,7 @@ def run_control_loop(
                     snapshot = controller.on_timer(now_ns=now_ns)
                 else:
                     snapshot = controller.on_frame(frame, now_ns=now_ns)
-            input_event_cursor, input_payloads = _persist_new_input_events(
+            input_event_cursor, input_payloads = persist_new_input_events(
                 actuator=actuator,
                 input_event_cursor=input_event_cursor,
                 recorder=recorder,
@@ -587,7 +542,7 @@ def run_control_loop(
                 f"controller.stop: {type(cleanup_error).__name__}: {cleanup_error}"
             )
         try:
-            _persist_new_input_events(
+            persist_new_input_events(
                 actuator=actuator,
                 input_event_cursor=input_event_cursor,
                 recorder=recorder,

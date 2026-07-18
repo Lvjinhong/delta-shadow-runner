@@ -411,6 +411,17 @@ def test_controller_stops_after_transition_timeout_without_retry() -> None:
     assert later.action is None
 
 
+def test_controller_can_be_stopped_explicitly_and_remains_terminal() -> None:
+    controller = _controller()
+
+    stopped = controller.stop("会话运行超时")
+    later = controller.stop("不应覆盖原始原因")
+
+    assert stopped.status is MenuControllerStatus.STOPPED
+    assert stopped.reason == "会话运行超时"
+    assert later == stopped
+
+
 def test_controller_stops_on_confirmed_death_summary_without_action() -> None:
     observer, patterns = _observer()
     controller = _controller()
