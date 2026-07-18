@@ -10,7 +10,11 @@ from delta_vision.win32_native import (
     INPUT_MOUSE,
     KEYEVENTF_KEYUP,
     KEYEVENTF_SCANCODE,
+    MOUSEEVENTF_ABSOLUTE,
+    MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_VIRTUALDESK,
     ImeDisabledSession,
     Win32NativeGateway,
     enable_per_monitor_dpi_awareness,
@@ -30,6 +34,12 @@ class FakeUser32:
         self.input_desktop_handle = 456
         self.closed_desktop_handles: list[int] = []
         self.close_desktop_succeeds = True
+        self.system_metrics = {
+            76: -1920,
+            77: 0,
+            78: 4480,
+            79: 1440,
+        }
 
     def OpenInputDesktop(self, flags, inherit, desired_access):
         assert flags == 0
@@ -80,6 +90,9 @@ class FakeUser32:
         assert event_size == ctypes.sizeof(INPUT)
         self.inputs.append(INPUT.from_buffer_copy(events[0]))
         return self.inserted_count
+
+    def GetSystemMetrics(self, index):
+        return self.system_metrics[index]
 
     def FindWindowW(self, class_name, window_title):
         assert class_name is None
@@ -175,6 +188,103 @@ def test_gateway_sends_relative_mouse_motion() -> None:
     assert event.mi.dx == 12
     assert event.mi.dy == -7
     assert event.mi.dwFlags == MOUSEEVENTF_MOVE
+
+
+def test_gateway_sends_absolute_mouse_motion_on_virtual_desktop() -> None:
+    user32 = FakeUser32()
+    gateway = Win32NativeGateway(user32=user32)
+
+    assert gateway.send_mouse_absolute(0, 720) == 1
+
+    event = user32.inputs[0]
+    assert event.type == INPUT_MOUSE
+    assert event.mi.dx == round(1920 * 65_535 / 4479)
+    assert event.mi.dy == round(720 * 65_535 / 1439)
+    assert event.mi.dwFlags == (
+        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+    )
+
+
+@pytest.mark.parametrize(
+    ("screen_x", "screen_y", "normalized_x", "normalized_y"),
+    [
+        (-1920, 0, 0, 0),
+        (2559, 0, 65_535, 0),
+        (-1920, 1439, 0, 65_535),
+        (2559, 1439, 65_535, 65_535),
+    ],
+)
+def test_gateway_maps_every_virtual_desktop_corner_exactly(
+    screen_x: int,
+    screen_y: int,
+    normalized_x: int,
+    normalized_y: int,
+) -> None:
+    user32 = FakeUser32()
+    gateway = Win32NativeGateway(user32=user32)
+
+    assert gateway.send_mouse_absolute(screen_x, screen_y) == 1
+
+    event = user32.inputs[0]
+    assert (event.mi.dx, event.mi.dy) == (normalized_x, normalized_y)
+
+
+@pytest.mark.parametrize(("metric", "value"), [(78, 1), (79, 0)])
+def test_gateway_rejects_invalid_virtual_desktop_size_without_input(
+    metric: int,
+    value: int,
+) -> None:
+    user32 = FakeUser32()
+    user32.system_metrics[metric] = value
+    gateway = Win32NativeGateway(user32=user32)
+
+    with pytest.raises(ValueError, match="虚拟桌面尺寸"):
+        gateway.send_mouse_absolute(0, 0)
+
+    assert user32.inputs == []
+
+
+@pytest.mark.parametrize(
+    ("x", "y"),
+    [(-1921, 0), (2560, 0), (0, -1), (0, 1440), (1.5, 20), (20, True)],
+)
+def test_gateway_rejects_absolute_mouse_position_outside_virtual_desktop(
+    x: object,
+    y: object,
+) -> None:
+    user32 = FakeUser32()
+    gateway = Win32NativeGateway(user32=user32)
+
+    with pytest.raises(ValueError, match="虚拟桌面"):
+        gateway.send_mouse_absolute(x, y)  # type: ignore[arg-type]
+
+    assert user32.inputs == []
+
+
+def test_gateway_sends_left_mouse_down_and_up() -> None:
+    user32 = FakeUser32()
+    gateway = Win32NativeGateway(user32=user32)
+
+    assert gateway.send_mouse_left(key_up=False) == 1
+    assert gateway.send_mouse_left(key_up=True) == 1
+
+    down, up = user32.inputs
+    assert down.type == INPUT_MOUSE
+    assert down.mi.dwFlags == MOUSEEVENTF_LEFTDOWN
+    assert up.mi.dwFlags == MOUSEEVENTF_LEFTUP
+
+
+@pytest.mark.parametrize("key_up", [0, 1, None, "false"])
+def test_gateway_rejects_non_boolean_left_mouse_state_without_input(
+    key_up: object,
+) -> None:
+    user32 = FakeUser32()
+    gateway = Win32NativeGateway(user32=user32)
+
+    with pytest.raises(ValueError, match="key_up"):
+        gateway.send_mouse_left(key_up=key_up)  # type: ignore[arg-type]
+
+    assert user32.inputs == []
 
 
 def test_ime_disabled_session_uses_public_api_for_each_unique_window() -> None:

@@ -18,8 +18,16 @@ ULONG_PTR = c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else c_uint32
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
 MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_VIRTUALDESK = 0x4000
+MOUSEEVENTF_ABSOLUTE = 0x8000
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 DESKTOP_READOBJECTS = 0x0001
 UOI_NAME = 2
 WTS_CURRENT_SESSION = 0xFFFFFFFF
@@ -96,6 +104,8 @@ def _load_user32() -> Any:
     user32.GetAsyncKeyState.restype = ctypes.c_short
     user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
     user32.SendInput.restype = ctypes.c_uint
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
     user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
     user32.FindWindowW.restype = ctypes.c_void_p
     user32.GetClientRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
@@ -353,7 +363,7 @@ class Win32NativeGateway:
         events = (INPUT * 1)(event)
         return int(self._user32.SendInput(1, events, ctypes.sizeof(INPUT)))
 
-    def send_mouse_relative(self, dx: int, dy: int) -> int:
+    def _send_mouse(self, *, dx: int, dy: int, flags: int) -> int:
         event = INPUT(
             type=INPUT_MOUSE,
             payload=_INPUTUNION(
@@ -361,7 +371,7 @@ class Win32NativeGateway:
                     dx=dx,
                     dy=dy,
                     mouseData=0,
-                    dwFlags=MOUSEEVENTF_MOVE,
+                    dwFlags=flags,
                     time=0,
                     dwExtraInfo=0,
                 )
@@ -369,6 +379,43 @@ class Win32NativeGateway:
         )
         events = (INPUT * 1)(event)
         return int(self._user32.SendInput(1, events, ctypes.sizeof(INPUT)))
+
+    def send_mouse_relative(self, dx: int, dy: int) -> int:
+        return self._send_mouse(dx=dx, dy=dy, flags=MOUSEEVENTF_MOVE)
+
+    def send_mouse_absolute(self, screen_x: int, screen_y: int) -> int:
+        """把屏幕像素转换成 SendInput 虚拟桌面绝对坐标。"""
+
+        left = int(self._user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
+        top = int(self._user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
+        width = int(self._user32.GetSystemMetrics(SM_CXVIRTUALSCREEN))
+        height = int(self._user32.GetSystemMetrics(SM_CYVIRTUALSCREEN))
+        if width <= 1 or height <= 1:
+            raise ValueError("虚拟桌面尺寸无效")
+        if (
+            type(screen_x) is not int
+            or type(screen_y) is not int
+            or not left <= screen_x < left + width
+            or not top <= screen_y < top + height
+        ):
+            raise ValueError("鼠标绝对坐标超出虚拟桌面")
+        normalized_x = round((screen_x - left) * 65_535 / (width - 1))
+        normalized_y = round((screen_y - top) * 65_535 / (height - 1))
+        return self._send_mouse(
+            dx=normalized_x,
+            dy=normalized_y,
+            flags=(
+                MOUSEEVENTF_MOVE
+                | MOUSEEVENTF_ABSOLUTE
+                | MOUSEEVENTF_VIRTUALDESK
+            ),
+        )
+
+    def send_mouse_left(self, *, key_up: bool) -> int:
+        if type(key_up) is not bool:
+            raise ValueError("鼠标左键 key_up 必须是布尔值")
+        flags = MOUSEEVENTF_LEFTUP if key_up else MOUSEEVENTF_LEFTDOWN
+        return self._send_mouse(dx=0, dy=0, flags=flags)
 
 
 def window_client_region(
