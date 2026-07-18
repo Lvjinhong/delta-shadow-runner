@@ -7,6 +7,11 @@
   "max_key_hold_ms": 250,
   "loop_interval_ms": 20,
   "max_duration_seconds": 180,
+  "menu": {
+    "profile": "../profiles/menu-zero-cost/menu.json",
+    "loop_interval_ms": 20,
+    "max_duration_seconds": 120
+  },
   "perception": {
     "mode": "template",
     "template_profile": "../profiles/route-01/templates.json"

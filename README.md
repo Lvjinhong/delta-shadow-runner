@@ -31,7 +31,9 @@
 9. 前台窗口标题 + HWND、F12 急停、最大按键时长和后台释放 watchdog；
 10. PNG/JSONL 回放、独立输入事件流和 blind set 准确度评估；
 11. 标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作回放的单条离线 E2E；
-12. 自动测试、Ruff、sdist/wheel build 和独立控制链验收。最新的精确测试数与覆盖率以仓库当前测试输出和 `Codex-progress.txt` 为准。
+12. 截图驱动的大厅菜单状态机：页面锚点和动作锚点分别确认，多帧一致后只点击一次，直到画面确认进入 `IN_MATCH`；
+13. 全会话编排：菜单没有确认完成时绝不启动局内路线，菜单与路线共用 `run_id` 并分别保存证据；
+14. 自动测试、Ruff、sdist/wheel build 和独立控制链验收。最新的精确测试数与覆盖率以仓库当前测试输出和 `Codex-progress.txt` 为准。
 
 尚未完成的是《三角洲行动》真实路线数据和 Windows 真机 E2E。仓库不能凭合成数据承诺游戏准确率；必须先在你的固定分辨率、固定地图、固定出生区域和固定视角上采样并评估。
 
@@ -73,7 +75,7 @@ start-windows-preflight.cmd
 
 同一次 Preflight 使用唯一 `run_id` 绑定截图、Worker 和 ground truth；报告还会核对证据新鲜度、首末帧 SHA-256、事件单调时间、按键重放状态和最终事件顺序。受控 Worker 未到达、终态后还有输入、未观察到完整 `key_down/key_up`、ground truth 没有合法 `position/arrived`、退出码非零或任一证据不一致都会失败。
 
-Preflight 的 `SendInput` 只发给标题和 HWND 都经过校验的独立测试窗口；游戏阶段只截图。F12 仍是急停键。DryRun、Armed、ControlledE2E 和 Preflight 不能并行启动，重复运行会被 Windows mutex 拒绝。
+Preflight 的 `SendInput` 只发给标题和 HWND 都经过校验的独立测试窗口；游戏阶段只截图。F12 仍是急停键。DryRun、Armed、SessionArmed、ControlledE2E 和 Preflight 不能并行启动，重复运行会被 Windows mutex 拒绝。
 
 ## 3. 端到端制作一条游戏路线
 
@@ -243,6 +245,11 @@ copy configs\game-route.example.json configs\game-route.json
 ```json
 {
   "armed_ready": false,
+  "menu": {
+    "profile": "../profiles/menu-zero-cost/menu.json",
+    "loop_interval_ms": 20,
+    "max_duration_seconds": 120
+  },
   "navigation": {
     "arrival_confirmations": 3,
     "initial_waypoint_confirmations": 3,
@@ -282,6 +289,34 @@ copy configs\game-route.example.json configs\game-route.json
 5. 支持键为 `w/a/s/d/e/shift/space`；鼠标轴范围为 `-4096..4096`；
 6. 示例全部是占位值，不能直接当作真实地图路线。
 
+### 4.1 准备大厅菜单 Profile
+
+全会话模式还需要 `profiles\menu-zero-cost\menu.json` 及其引用的模板和 calibration 来源数据。它和局内路线 Profile 必须来自同一游戏客户区分辨率；任意哈希、来源帧或分辨率不一致都会在发送输入前失败。
+
+首个零成本流程的 `transitions` 必须连续覆盖：
+
+```text
+LOBBY → STRATEGY_BOARD → ZERO_DAM_READY → IN_MATCH
+```
+
+每个可点击来源页面都必须有两张独立裁剪：
+
+1. `page` 模板只负责确认当前页面；
+2. `action` 模板只负责定位允许点击的控件，并受显式 `action_region` 限制；
+3. `DEATH_SUMMARY`、`POST_MATCH` 等异常页面应列入 `stop_scenes`；
+4. 页面和按钮需要连续多帧达到阈值，点击位置漂移也必须在 Profile 门槛内；
+5. 同一页面转换最多执行一次，目标页面没有重新确认就不会重试点击。
+
+在 Windows 上可先只校验完整配置和两个 Profile，不打开窗口、不截图、不发送输入：
+
+```powershell
+uv run python -m delta_vision.game_session `
+  --config configs\game-route.json `
+  --validate-only
+```
+
+仓库不附带可跨账号、分辨率和 HUD 通用的真实游戏模板。需要保留你本机采集得到的完整菜单 Profile bundle；不能只复制 `menu.json` 而丢失它引用的来源清单、原始帧和模板文件。
+
 ## 5. 运行
 
 首次运行或修改分辨率、HUD、模板、路线配置后，应先让 `start-windows-preflight.cmd` 通过。Preflight 只证明 Windows 截图和受控输入链可用，不代表真实游戏路线已经准确。
@@ -294,8 +329,8 @@ start-game-route.cmd
 
 菜单提供：
 
-1. `D`：dry-run，执行真实截图、识别、A*、状态机和回放，但不发送键鼠输入；
-2. `A`：armed，向前台目标窗口发送标准 Win32 输入；
+1. `D`：局内 dry-run；先由你手动进图，再执行截图、识别、A*、状态机和回放，不发送键鼠输入；
+2. `A`：全会话 armed；从大厅开始识别并一次性点击零号大坝流程，只有画面确认 `IN_MATCH` 后才启动局内路线；
 3. `Q`：退出。
 
 armed 有三层显式确认：
@@ -311,7 +346,11 @@ armed 有三层显式确认：
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\vision.ps1 -Mode DryRun -Config configs\game-route.json
 
-# 显式发送标准输入
+# 从大厅开始运行完整会话并显式发送标准输入
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode SessionArmed -Config configs\game-route.json -ConfirmArmed
+
+# 高级用法：已经手动进图后，只运行局内 armed 路线
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\vision.ps1 -Mode Armed -Config configs\game-route.json -ConfirmArmed
 ```
@@ -329,16 +368,23 @@ Worker 退出码：
 ## 6. 运行证据
 
 ```text
-artifacts/runs/YYYYMMDD-HHMMSS/worker/
-├── events.jsonl
-└── replay/
-    ├── input-events.jsonl
-    ├── manifest.jsonl
-    └── frames/
-        └── frame-XXXXXXXX.png
+artifacts/runs/YYYYMMDD-HHMMSS/
+├── session-summary.json
+├── menu/
+│   ├── events.jsonl
+│   └── replay/
+│       ├── input-events.jsonl
+│       ├── manifest.jsonl
+│       └── frames/
+└── route/
+    ├── events.jsonl
+    └── replay/
+        ├── input-events.jsonl
+        ├── manifest.jsonl
+        └── frames/
 ```
 
-`input-events.jsonl` 独立记录每个 `mouse_move/key_down/key_up`。即使最后一次输入发生在无截图、超时或异常退出路径，也不依赖“下一张截图”才能落盘。
+全会话的菜单和路线目录使用同一个 `run_id`。`session-summary.json` 只有在菜单确认 `COMPLETED` 后才可能出现路线结果；菜单停止时 `route` 必须为 `null`。每个 `input-events.jsonl` 使用稳定 `event_id` 幂等记录 `mouse_move_absolute/mouse_left_down/mouse_left_up/mouse_move/key_down/key_up`；即使双日志中的一端暂时写失败，旧游标恢复也不会重复编号或拼接坏尾行。
 
 每次 Worker 运行都会清空该运行目录中的旧 `events.jsonl`，并给事件写入本次 `run_id`。不要手工把不同运行目录的证据拼成一份报告；Preflight 会将其判为失败。
 

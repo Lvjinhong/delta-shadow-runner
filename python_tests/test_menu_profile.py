@@ -179,6 +179,7 @@ def test_load_menu_profile_builds_real_observer_and_fresh_controller(
     first_controller = loaded.create_controller()
     second_controller = loaded.create_controller()
 
+    assert loaded.frame_size == (96, 64)
     assert loaded.profile_id == "menu-test-v1"
     assert loaded.source_run_ids == ("cal-01",)
     assert loaded.template_provenance[0].template_id == "lobby-preparation"

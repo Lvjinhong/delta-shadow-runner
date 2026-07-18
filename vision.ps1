@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E", "Preflight")]
+    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", "ControlledE2E", "Preflight")]
     [string]$Mode = "DryRun",
 
     [string]$Config = "configs/controlled-window.json",
@@ -356,6 +356,20 @@ if ($Mode -eq "DryRun") {
 
 Assert-ArmedConfirmation
 $workerMutex = Enter-WorkerLock
+
+if ($Mode -eq "SessionArmed") {
+    try {
+        & $uv run python -m delta_vision.game_session `
+            --config $configPath --artifacts $Artifacts `
+            --run-id $effectiveRunId "--armed"
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
+}
 
 if ($Mode -eq "Armed") {
     try {

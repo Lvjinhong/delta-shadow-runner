@@ -139,6 +139,7 @@ class _SourceManifestRecord:
 class LoadedMenuProfile:
     profile_id: str
     profile_sha256: str
+    frame_size: tuple[int, int]
     source_run_ids: tuple[str, ...]
     template_provenance: tuple[MenuTemplateProvenance, ...]
     observer: TemplateMenuSceneObserver
@@ -657,6 +658,7 @@ class _MenuProfileLoader:
         loaded = LoadedMenuProfile(
             profile_id=profile_id,
             profile_sha256=self._profile_sha256,
+            frame_size=frame_size,
             source_run_ids=source_run_ids,
             template_provenance=template_provenance,
             observer=TemplateMenuSceneObserver(

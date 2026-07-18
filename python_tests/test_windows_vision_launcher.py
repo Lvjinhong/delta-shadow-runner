@@ -13,8 +13,8 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
     for fragment in (
         (
             '[ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", '
-            '"TestTarget", "Benchmark", "DryRun", "Armed", "ControlledE2E", '
-            '"Preflight")]'
+            '"TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", '
+            '"ControlledE2E", "Preflight")]'
         ),
         "winget.exe install --id astral-sh.uv -e",
         "https://astral.sh/uv/0.11.28/install.ps1",
@@ -26,6 +26,7 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "delta_vision.benchmark",
         '"--duration", "60"',
         "delta_vision.worker",
+        "delta_vision.game_session",
         "delta_vision.sample_frames",
         "delta_vision.calibrate_templates",
         '[ValidateSet("ncc", "orb", "sift")]',
@@ -66,6 +67,16 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
     assert "Enter-WorkerLock" in dry_run_block
     assert "ReleaseMutex" in dry_run_block
 
+    session_block = script[
+        script.index('if ($Mode -eq "SessionArmed")') : script.index(
+            'if ($Mode -eq "Armed")'
+        )
+    ]
+    assert "Enter-WorkerLock" not in session_block
+    assert "delta_vision.game_session" in session_block
+    assert '"--armed"' in session_block
+    assert "ReleaseMutex" in session_block
+
     controlled_function = script[
         script.index("function Invoke-ControlledE2E") : script.index(
             "$uv = Initialize-PythonEnvironment"
@@ -93,11 +104,11 @@ def test_game_route_cmd_defaults_to_dry_run_and_double_confirms_armed() -> None:
 
     assert "configs\\game-route.json" in script
     assert "configs\\game-route.example.json" in script
-    assert "profiles\\route-01\\templates.json" in script
+    assert "profiles\\route-01\\templates.json" not in script
     assert "choice /C DAQ" in script
     assert "choice /C YN" in script
     assert "-Mode DryRun" in script
-    assert "-Mode Armed" in script
+    assert "-Mode SessionArmed" in script
     assert "-ConfirmArmed" in script
     assert "F12" in script
 
@@ -127,6 +138,11 @@ def test_game_route_example_is_safe_template_profile_config() -> None:
     assert config["target_window_title"] == "三角洲行动"
     assert config["perception"]["mode"] == "template"
     assert config["perception"]["template_profile"] == "../profiles/route-01/templates.json"
+    assert config["menu"] == {
+        "profile": "../profiles/menu-zero-cost/menu.json",
+        "loop_interval_ms": 20,
+        "max_duration_seconds": 120,
+    }
     assert config["goal_node_id"] in config["nodes"]
     assert config["edge_actions"]
     assert all(type(action["mouse_dx"]) is int for action in config["edge_actions"])

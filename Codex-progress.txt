@@ -105,3 +105,13 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - Profile 和 `vision.ps1 -Mode Calibrate` 支持 `-FeatureBackend ncc|orb|sift` 与 `-MaximumFeatures`；README 已补齐用同一 calibration/blind 数据做 NCC/SIFT A/B 的完整命令。
 - 本机 Python 3.12.12 全量验证：653 项测试通过，总覆盖率 87.27%；Ruff、依赖冻结同步和 sdist/wheel build 通过；`pip-audit` 对锁定的运行时三方依赖未发现已知漏洞。
 - 以上仍是离线实现证据。Windows 可见桌面、真实截图 blind 指标、受控窗口 20/20、游戏 dry-run/armed 路线和实际准确率尚未执行，相关 `passes` 保持 false。
+
+[2026-07-18 恢复开发：大厅到局内的全会话闭环]
+- 新增 `menu_worker.py`：持续截图、页面/按钮多帧确认、每个转换一次性执行、输入事件落盘、超时/异常安全清理；菜单终态为 `COMPLETED` 或 `STOPPED`，不会把未知页面当作可执行状态。
+- 新增共享输入事件持久化和严格 JSONL 恢复：每个输入带稳定 `event_id`，replay/runtime 双端幂等；完整写后失败、半写坏尾行、跨实例旧游标和中间损坏 fail-closed 均通过故障注入。
+- 新增 `game_session.py`：从 `LOBBY` 开始运行菜单 Profile，只有画面确认 `IN_MATCH` 才启动局内路线；菜单未完成时 route 严格为 null，两阶段共用 run_id，证据分别写入 menu/route，汇总写入 `session-summary.json`。
+- 全会话强制 schema v2 `TemplateProfile`；菜单 Profile、路线 Profile 和窗口客户区分辨率必须一致。schema v1 ColorAnchor 和分辨率不一致在创建窗口、截图源或输入执行器前拒绝。
+- `vision.ps1` 新增 `SessionArmed`；`start-game-route.cmd` 的 A 从大厅启动完整会话，D 保留为手动进图后的局内 dry-run；整个会话保持同一 `Local\\DeltaVisionWorker` mutex、显式 `-ConfirmArmed`、F12 和前台 HWND/标题闸门。
+- README 和安全配置示例已补菜单 Profile bundle、validate-only、SessionArmed、artifact 结构及退出码说明；不附带假装可跨环境通用的真实游戏模板。
+- 本机 Python 3.12.12 全量验证：679 项测试通过，总覆盖率 86.60%；Ruff、uv sync --frozen、sdist/wheel build、pip-audit 通过。菜单/JSONL 独立审查和全会话独立审查最终均 APPROVE。
+- Windows `192.168.3.7` 当前 ping 丢包、TCP 22 超时、SSH 报 Host is down；PowerShell 5.1、可见桌面、菜单点击、固定路线和准确率尚未实跑，相关 feature passes 继续保持 false。

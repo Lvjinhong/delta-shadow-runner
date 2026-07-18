@@ -1,6 +1,6 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 14,
+  "version": 15,
   "lastUpdated": "2026-07-18",
   "features": [
     {
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：653 项测试、Ruff 通过，总覆盖率 87.27%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000",
+        "本机 Python 3.12.12：679 项测试、Ruff 通过，总覆盖率 86.60%；sdist/wheel build 通过；pip-audit 未发现锁定运行时依赖的已知漏洞；A* 与参考 Dijkstra 随机差分 1000/1000",
         "Windows CPython 3.12.13：419 项测试、Ruff、sdist/wheel build 通过；OpenCV 平台舍入只调整测试容差，业务阈值未变"
       ]
     },
@@ -54,7 +54,7 @@
       "passes": false,
       "evidence": [
         "FrameRecorder 保存 PNG、时间戳、分辨率、导航元数据和独立 input-events.jsonl；ReplayFrameSource 校验路径、顺序、解码和尺寸，并直接实现 Worker 的 grab/close 协议",
-        "本机标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放，以及正常结束、无下一帧超时、截图异常和慢截图/watchdog 并发均通过；Windows 实际采集产物尚未生成"
+        "本机标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放，以及正常结束、无下一帧超时、截图异常和慢截图/watchdog 并发均通过；输入事件以稳定 event_id 在 replay/runtime 双端幂等落盘，完整写后失败、半写坏尾行和跨实例旧游标恢复均通过故障注入；Windows 实际采集产物尚未生成"
       ]
     },
     {
@@ -103,8 +103,8 @@
       "description": "Windows 一键入口完成依赖、配置、采集和安全自检，重复执行不启动重复 Worker，失败信息可定位",
       "passes": false,
       "evidence": [
-        "vision.ps1、start-game-route.cmd 与 start-windows-preflight.cmd 已实现固定依赖、配置只读校验、受控 SendInput E2E、5 秒人工切回、60 秒前台截图基准、DryRun/Armed 和机器可判定汇总报告",
-        "dry-run、armed、ControlledE2E 与 Preflight 共用 Local\\DeltaVisionWorker mutex；唯一 run_id 绑定截图/Worker/ground truth，独立评审实际复跑旧产物、首末帧篡改、终态后输入、非法 arrived、缺失产物和伪造指标均未误报 PASS；Windows PowerShell 5.1 实际启动尚未执行"
+        "vision.ps1、start-game-route.cmd 与 start-windows-preflight.cmd 已实现固定依赖、配置只读校验、受控 SendInput E2E、5 秒人工切回、60 秒前台截图基准、DryRun/Armed/SessionArmed 和机器可判定汇总报告；SessionArmed 只有在截图多帧确认 IN_MATCH 后才创建局内路线 Worker",
+        "dry-run、armed、SessionArmed、ControlledE2E 与 Preflight 共用 Local\\DeltaVisionWorker mutex；菜单和路线使用同一 run_id、隔离 artifact 目录与原子 session-summary.json；独立评审确认菜单未完成不启动路线、schema v1 路线和分辨率不一致均在运行时创建前拒绝；Windows PowerShell 5.1 实际启动尚未执行"
       ]
     },
     {
@@ -122,7 +122,9 @@
       "category": "e2e",
       "description": "在用户授权的受控游戏场景中，以外部截图和标准输入完成至少一条固定路线并保存完整运行证据",
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "2026-07-16 已由用户授权实机走通大厅→战略板→零号大坝常规→跳过配装→零成本进图，并保存检查点；该次入场约 17 秒后被击倒，未开始固定路线，不能计为路线 E2E 或成功率"
+      ]
     },
     {
       "id": "release-audit",
