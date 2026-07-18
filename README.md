@@ -6,7 +6,7 @@
 
 ```text
 游戏窗口截图
-→ OpenCV 模板识别当前路线位置
+→ OpenCV NCC 模板或 ORB/SIFT 局部特征识别当前路线位置
 → waypoint + A* 选择后续路线
 → 每条路线边执行一次相对鼠标转向
 → 用有时限的 W/A/S/D/E/Shift/Space 短脉冲移动或交互
@@ -22,16 +22,16 @@
 
 1. DXcam 截图，MSS 兼容回退；
 2. 人工路线截图采样；
-3. 固定 ROI、多尺度模板匹配、歧义拒绝和置信度输出；同一 waypoint 的多张外观模板聚合后再与其他 waypoint 比较；
+3. 固定 ROI 的 NCC 多尺度模板匹配，以及可选的 ORB/SIFT + KNN ratio test + RANSAC 几何校验；所有后端都按 waypoint 聚合多张外观模板并在歧义时拒绝输出；
 4. 路线建立前全局定位；路线建立后优先只匹配当前/下一节点，主候选失败时才诊断已知非相邻节点并立即停机；
 5. 模板位置到 waypoint/A* 路线的映射；
 6. 每条路线边一次相对鼠标转向，同一边只重复有界按键脉冲；
-7. 低置信停止、重定位、卡住恢复和连续到达确认；
+7. 初始位置 3 帧确认、节点推进 2 帧确认、失去定位后 3 帧重定位确认，以及低置信停止、卡住恢复和连续到达确认；
 8. dry-run 与 Win32 `SendInput` armed 模式；
 9. 前台窗口标题 + HWND、F12 急停、最大按键时长和后台释放 watchdog；
 10. PNG/JSONL 回放、独立输入事件流和 blind set 准确度评估；
 11. 标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作回放的单条离线 E2E；
-12. 419 项自动测试通过，总覆盖率 88.48%，独立 10-Gate 控制链验收通过。
+12. 自动测试、Ruff、sdist/wheel build 和独立控制链验收。最新的精确测试数与覆盖率以仓库当前测试输出和 `Codex-progress.txt` 为准。
 
 尚未完成的是《三角洲行动》真实路线数据和 Windows 真机 E2E。仓库不能凭合成数据承诺游戏准确率；必须先在你的固定分辨率、固定地图、固定出生区域和固定视角上采样并评估。
 
@@ -132,7 +132,11 @@ artifacts/datasets/route01-cal/
 5. 同一地段建议从不同人工运行中选多个外观模板，但 calibration 与 blind 运行不能混用；
 6. 给 Worker 使用的模板必须填写 `waypoint_id`。路线建立后的在线匹配会忽略 `waypoint_id=null` 的模板，避免无归属模板绕过路线约束；正常候选只含当前/下一节点，只有正常候选拒绝后才扫描其他有归属模板，用于识别已知偏航并安全停机，不会拿它们继续规划。
 
-### 3.3 生成模板 Profile
+### 3.3 生成 NCC 或局部特征 Profile
+
+首次标定建议同时生成 NCC 与 SIFT 两个独立 Profile。二者必须使用相同 calibration 数据，并在同一个 blind 数据集上对比；不要用 calibration 成绩选后端。
+
+NCC 基线（默认）：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -140,18 +144,34 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -Mode Calibrate `
   -Dataset artifacts\datasets\route01-cal `
   -Labels labels\route01-cal.jsonl `
-  -ProfilePath profiles\route-01
+  -ProfilePath profiles\route-01-ncc `
+  -FeatureBackend ncc
+```
+
+SIFT + RANSAC 对照：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 `
+  -Mode Calibrate `
+  -Dataset artifacts\datasets\route01-cal `
+  -Labels labels\route01-cal.jsonl `
+  -ProfilePath profiles\route-01-sift `
+  -FeatureBackend sift `
+  -MaximumFeatures 3000
 ```
 
 成功后生成：
 
 ```text
-profiles/route-01/
+profiles/route-01-sift/
 ├── templates.json
 └── templates/
 ```
 
-Profile 会绑定来源 run、sequence、帧像素、ROI、模板和清单的 SHA-256；旧的 Profile v1 必须重新标定。
+Profile 会绑定来源 run、sequence、帧像素、ROI、模板和清单的 SHA-256；SIFT/ORB Profile 还会记录后端、最大特征数、匹配点数、inlier 数/比例、重投影误差和投影区域门槛。运行时不会在不同后端之间直接比较 raw score，也不会在多个 waypoint 同时通过几何校验时强行选一个。旧的 Profile v1 必须重新标定。
+
+选择建议：NCC 适合作为固定视角基线；SIFT 通常更能容忍缩放、旋转和视角变化；ORB 速度更高且不依赖 SIFT 描述子。最终选择必须由相同 blind set 的指标和完整路线 dry-run 共同决定，仓库不会预设某个后端在你的游戏画面上一定更准。
 
 ### 3.4 采集独立 blind 运行
 
@@ -190,10 +210,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -Split blind `
   -Dataset artifacts\datasets\route01-blind `
   -Labels labels\route01-blind.jsonl `
-  -ProfilePath profiles\route-01\templates.json `
-  -Artifacts artifacts\evaluations\route01-blind `
+  -ProfilePath profiles\route-01-ncc\templates.json `
+  -Artifacts artifacts\evaluations\route01-blind-ncc `
   -DistanceTolerance 25
 ```
+
+再把 `-ProfilePath` 与 `-Artifacts` 分别改为 `profiles\route-01-sift\templates.json` 和 `artifacts\evaluations\route01-blind-sift` 重跑一次。只有输入 blind 数据集、标签和容差完全相同，NCC/SIFT 的 A/B 结果才可比较。
 
 输出 `metrics.json` 和 `predictions.jsonl`，包括：
 
@@ -221,6 +243,12 @@ copy configs\game-route.example.json configs\game-route.json
 ```json
 {
   "armed_ready": false,
+  "navigation": {
+    "arrival_confirmations": 3,
+    "initial_waypoint_confirmations": 3,
+    "waypoint_advance_confirmations": 2,
+    "relocalization_confirmations": 3
+  },
   "nodes": {
     "start": {"x": 0, "y": 0, "edges": [{"target": "turn", "cost": 1}]},
     "turn": {"x": 100, "y": 0, "edges": [{"target": "goal", "cost": 1}]},
@@ -248,7 +276,7 @@ copy configs\game-route.example.json configs\game-route.json
 动作语义：
 
 1. 进入一条新边时，`mouse_dx/mouse_dy` 只执行一次；
-2. `key` 以短脉冲重复，直到画面确认进入下一 waypoint；
+2. `key` 以短脉冲重复；初始 waypoint 连续确认 3 帧后才允许首次动作，下一 waypoint 连续确认 2 帧后才推进，丢失定位后必须连续确认 3 帧才恢复；
 3. `mouse_dx` 是相对计数，不是角度，必须在固定游戏灵敏度和 FOV 下实测；
 4. `e` 可用于“交互点 → 交互完成状态”的单独路线边；
 5. 支持键为 `w/a/s/d/e/shift/space`；鼠标轴范围为 `-4096..4096`；

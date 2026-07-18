@@ -1,7 +1,7 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 13,
-  "lastUpdated": "2026-07-16",
+  "version": 14,
+  "lastUpdated": "2026-07-18",
   "features": [
     {
       "id": "legacy-platform-removed",
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：419 项测试、Ruff 通过，总覆盖率 88.48%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000",
+        "本机 Python 3.12.12：653 项测试、Ruff 通过，总覆盖率 87.27%；sdist/wheel build 通过；A* 与参考 Dijkstra 随机差分 1000/1000",
         "Windows CPython 3.12.13：419 项测试、Ruff、sdist/wheel build 通过；OpenCV 平台舍入只调整测试容差，业务阈值未变"
       ]
     },
@@ -63,7 +63,7 @@
       "description": "从真实截图识别场景状态、HUD或交互提示、方向或视觉锚点，输出置信度和诊断图，并在独立标注集计算指标",
       "passes": false,
       "evidence": [
-        "受控窗口颜色锚点和游戏路线多尺度模板匹配均输出置信度、歧义拒绝与可执行路线位置",
+        "受控窗口颜色锚点、游戏路线 NCC 多尺度模板，以及可选 ORB/SIFT + KNN ratio test + RANSAC 几何校验均输出置信度或可解释诊断，并在跨 waypoint 歧义时 fail closed",
         "已实现 calibration/blind 数据隔离、标签全覆盖、precision/recall/F1、false-lock 与位置误差评估；metrics 显式标记 unconstrained_perception，避免把全局感知指标冒充在线路线约束效果；Windows 真实截图和独立标注指标尚未执行"
       ]
     },
@@ -73,8 +73,8 @@
       "description": "感知结果可定位到固定路线节点或局部位姿，A* 生成目标路线，低置信度或偏航时安全停止或重定位",
       "passes": false,
       "evidence": [
-        "VisualNavigationController 只接收 CapturedFrame，使用模板路线位置、waypoint、A* 和显式边动作；首次全局定位后通过不可变 ObservationScope 将 current/next 作为正常候选；每条边一次相对鼠标转向并重复有界按键脉冲",
-        "正常候选拒绝后仅扫描其他有归属模板以诊断已知偏航并停机；同 waypoint 多模板先聚合后再做跨 waypoint margin；空候选、无归属模板和范围外锚点 fail closed；独立 10-Gate evaluator 的合成闭环、回放、低置信、恢复、终态和 watchdog 并发全部通过；新增单条离线 E2E 复用标定流程实际产出的 Profile 驱动 Worker；Windows 黑盒路线尚未执行"
+        "VisualNavigationController 只接收 CapturedFrame，使用模板路线位置、waypoint、A* 和显式边动作；初始定位至少 3 帧、节点推进至少 2 帧、重定位至少 3 帧连续确认后才恢复动作；控制时钟与截图/观测元数据违约会先释放输入再停止",
+        "首次全局定位后通过不可变 ObservationScope 将 current/next 作为正常候选；正常候选零命中后才扫描其他有归属模板诊断已知偏航，正常候选自身歧义保持 uncertain；同 waypoint 多模板先聚合，跨 waypoint 同时通过不强选；离线闭环、回放、低置信、恢复、终态和 watchdog 并发测试通过；Windows 黑盒路线尚未执行"
       ]
     },
     {

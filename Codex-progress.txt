@@ -1,5 +1,5 @@
 Delta External Vision Runner 开发进度
-更新时间：2026-07-16
+更新时间：2026-07-18
 GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 
 [最终目标]
@@ -96,3 +96,12 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 鼠标释放不受前台/急停闸门阻止；首次释放失败会立即重试，独立 watchdog、`release_all` 与 `expire_overdue` 继续兜底。Timer 工厂构造或启动失败也会走立即释放路径。
 - TDD 覆盖过期、失焦、卡住状态零移动、锁等待过期、并发串行、SendInput 失败、watchdog 构造/启动失败和键鼠释放失败组合；定向 39 项测试及 Ruff 通过。
 - 独立 code-reviewer 逐项复现并推动修复三类并发/异常问题，最终无 finding，结论 APPROVE。尚未在 Windows 可见桌面发送真实鼠标输入，不能标记 live E2E 通过。
+
+[2026-07-18 恢复开发：多帧路线确认与 ORB/SIFT]
+- `VisualNavigationController` 新增初始 waypoint 3 帧、节点推进 2 帧、重定位 3 帧的连续确认；候选变化会清零，局部确认不会延长定位超时。
+- 截图和观测的 sequence/captured_at 必须为严格递增的非负整数且逐帧一致；控制时钟必须为非负、单调整数，任何违约都先释放输入再停止。
+- `FeatureWaypointObserver` 把 ORB/SIFT 的 KNN ratio test、RANSAC/inlier、重投影误差和投影四边形结果映射为路线节点；多个不同 waypoint 同时通过时保持 uncertain，不按 raw score 强选。
+- 路线外模板只在当前/下一节点零命中后用于偏航诊断；当前/下一节点存在歧义时不会被路线外命中覆盖。该边界由先红后绿的回归测试固定。
+- Profile 和 `vision.ps1 -Mode Calibrate` 支持 `-FeatureBackend ncc|orb|sift` 与 `-MaximumFeatures`；README 已补齐用同一 calibration/blind 数据做 NCC/SIFT A/B 的完整命令。
+- 本机 Python 3.12.12 全量验证：653 项测试通过，总覆盖率 87.27%；Ruff、依赖冻结同步和 sdist/wheel build 通过；`pip-audit` 对锁定的运行时三方依赖未发现已知漏洞。
+- 以上仍是离线实现证据。Windows 可见桌面、真实截图 blind 指标、受控窗口 20/20、游戏 dry-run/armed 路线和实际准确率尚未执行，相关 `passes` 保持 false。
