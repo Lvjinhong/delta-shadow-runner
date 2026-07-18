@@ -115,3 +115,10 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - README 和安全配置示例已补菜单 Profile bundle、validate-only、SessionArmed、artifact 结构及退出码说明；不附带假装可跨环境通用的真实游戏模板。
 - 本机 Python 3.12.12 全量验证：679 项测试通过，总覆盖率 86.60%；Ruff、uv sync --frozen、sdist/wheel build、pip-audit 通过。菜单/JSONL 独立审查和全会话独立审查最终均 APPROVE。
 - Windows `192.168.3.7` 当前 ping 丢包、TCP 22 超时、SSH 报 Host is down；PowerShell 5.1、可见桌面、菜单点击、固定路线和准确率尚未实跑，相关 feature passes 继续保持 false。
+
+[2026-07-18 恢复开发：可移植菜单 Profile 交付包]
+- 新增 `package_menu_profile.py`：先完整校验来源 Profile、run manifest、帧内容和模板哈希，只复制被引用的 6 个 calibration run 与 11 个模板资产，并从输出目录重新加载 `menu.json`。
+- 目录与 ZIP 使用同文件系统临时产物和原子 no-replace 发布；并发出现同名 ZIP 或空目录会保留用户路径并失败回滚。半写 ZIP、发布失败、清理失败和发布前 `stat` 失败均有先红后绿的故障注入测试。
+- 最终本机菜单包为 `output/windows-ready/menu-zero-cost-v3.zip`，44 MiB，SHA-256 `3b740125c29dafec1f6cf7356db9afa2d4f1137a271364a3bff6dab577e44230`；ZIP 完整性及解压后 Profile 重载通过，Profile 为 2560×1440、6 个来源 run、6 个场景模板。
+- 本机 Python 3.12.12 全量验证：687 项测试通过，总覆盖率 86.21%；Ruff、sdist/wheel build、`git diff --check` 和锁定运行时依赖 `pip-audit` 通过；打包器历经三轮独立故障注入复审后最终 APPROVE。
+- `game_session --validate-only` 已越过菜单包加载，并按预期停在缺失 `profiles/route-01/templates.json`。这说明大厅菜单数据已可交付，但局内路线 Profile 仍未采集，不能据此宣称跑图 E2E 或准确率。

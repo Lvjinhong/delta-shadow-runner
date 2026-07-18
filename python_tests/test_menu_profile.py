@@ -1,14 +1,17 @@
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
+import delta_vision.package_menu_profile as package_module
 from delta_vision.frames import CapturedFrame, DatasetContentDigest
 from delta_vision.menu_automation import MenuControllerStatus, MenuScene
 from delta_vision.menu_profile import load_menu_profile
+from delta_vision.package_menu_profile import materialize_menu_profile
 
 
 def _write_template(path: Path, seed: int) -> tuple[np.ndarray, str]:
@@ -197,6 +200,242 @@ def test_load_menu_profile_builds_real_observer_and_fresh_controller(
         observation,
         now_ns=observation.captured_at_ns,
     ).status is MenuControllerStatus.OBSERVING
+
+
+def test_materialize_menu_profile_copies_only_referenced_bundle_and_validates(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    unrelated = source_root / "unrelated.bin"
+    unrelated.write_bytes(b"not referenced")
+    output = tmp_path / "portable-menu"
+    archive = tmp_path / "portable-menu.zip"
+
+    result = materialize_menu_profile(
+        profile_path,
+        output,
+        archive_path=archive,
+    )
+
+    loaded = load_menu_profile(result.profile_path)
+    assert result.profile_path == output / "menu.json"
+    assert result.source_run_count == 1
+    assert result.template_asset_count == 3
+    assert result.total_bytes > 0
+    assert loaded.profile_id == "menu-test-v1"
+    assert not (output / "unrelated.bin").exists()
+    assert archive.is_file()
+    with zipfile.ZipFile(archive) as bundle:
+        names = set(bundle.namelist())
+    assert "menu.json" in names
+    assert "lobby-page.png" in names
+    assert "source/cal-01/manifest.jsonl" in names
+
+
+def test_materialize_menu_profile_rejects_tampered_source_before_output(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    (profile_path.parent / "lobby-page.png").write_bytes(b"tampered")
+    output = tmp_path / "portable-menu"
+
+    with pytest.raises(ValueError, match="SHA-256 不匹配"):
+        materialize_menu_profile(profile_path, output)
+
+    assert not output.exists()
+
+
+def test_materialize_menu_profile_rejects_archive_inside_output(tmp_path: Path) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    output = tmp_path / "portable-menu"
+
+    with pytest.raises(ValueError, match="归档文件不能位于输出目录内"):
+        materialize_menu_profile(
+            profile_path,
+            output,
+            archive_path=output / "portable-menu.zip",
+        )
+
+    assert not output.exists()
+
+
+def test_materialize_menu_profile_cleans_partial_archive_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    output = tmp_path / "portable-menu"
+    archive = tmp_path / "portable-menu.zip"
+
+    def fail_after_partial_archive(base_name, _format, *, root_dir):
+        del root_dir
+        partial = Path(f"{base_name}.zip")
+        partial.write_bytes(b"partial-zip")
+        raise OSError("archive failed after partial write")
+
+    monkeypatch.setattr(package_module.shutil, "make_archive", fail_after_partial_archive)
+    with pytest.raises(OSError, match="partial write"):
+        materialize_menu_profile(
+            profile_path,
+            output,
+            archive_path=archive,
+        )
+
+    assert not output.exists()
+    assert not archive.exists()
+    assert not list(tmp_path.glob(".*portable-menu*"))
+
+
+def test_materialize_menu_profile_never_overwrites_concurrent_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    output = tmp_path / "portable-menu"
+    archive = tmp_path / "portable-menu.zip"
+    original_make_archive = package_module.shutil.make_archive
+
+    def create_user_archive_during_packaging(base_name, format, *, root_dir):
+        created = original_make_archive(base_name, format, root_dir=root_dir)
+        archive.write_bytes(b"user-created-during-packaging")
+        return created
+
+    monkeypatch.setattr(
+        package_module.shutil,
+        "make_archive",
+        create_user_archive_during_packaging,
+    )
+    with pytest.raises(FileExistsError):
+        materialize_menu_profile(
+            profile_path,
+            output,
+            archive_path=archive,
+        )
+
+    assert archive.read_bytes() == b"user-created-during-packaging"
+    assert not output.exists()
+    assert not list(tmp_path.glob(".*portable-menu*"))
+
+
+def test_materialize_menu_profile_preserves_original_error_when_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    output = tmp_path / "portable-menu"
+    archive = tmp_path / "portable-menu.zip"
+    original_unlink = Path.unlink
+
+    def fail_archive_publish(_staging, _archive):
+        raise OSError("ORIGINAL archive publish failure")
+
+    def fail_temporary_archive_cleanup(path, *args, **kwargs):
+        if path.name.startswith(".portable-menu.tmp-"):
+            raise PermissionError("CLEANUP unlink failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        package_module,
+        "_publish_archive_no_replace",
+        fail_archive_publish,
+        raising=False,
+    )
+    monkeypatch.setattr(Path, "unlink", fail_temporary_archive_cleanup)
+
+    with pytest.raises(OSError, match="ORIGINAL archive publish failure") as failure:
+        materialize_menu_profile(
+            profile_path,
+            output,
+            archive_path=archive,
+        )
+
+    assert any(
+        "CLEANUP unlink failure" in note
+        for note in getattr(failure.value, "__notes__", ())
+    )
+    assert not output.exists()
+    assert not archive.exists()
+    assert len(list(tmp_path.glob(".portable-menu.tmp-*.zip"))) == 1
+
+
+def test_materialize_menu_profile_never_replaces_concurrent_output_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    output = tmp_path / "portable-menu"
+    archive = tmp_path / "portable-menu.zip"
+    original_make_archive = package_module.shutil.make_archive
+    reserved_inode: int | None = None
+
+    def reserve_output_during_packaging(base_name, format, *, root_dir):
+        nonlocal reserved_inode
+        created = original_make_archive(base_name, format, root_dir=root_dir)
+        output.mkdir(mode=0o700)
+        reserved_inode = output.stat().st_ino
+        return created
+
+    monkeypatch.setattr(
+        package_module.shutil,
+        "make_archive",
+        reserve_output_during_packaging,
+    )
+    with pytest.raises(FileExistsError):
+        materialize_menu_profile(
+            profile_path,
+            output,
+            archive_path=archive,
+        )
+
+    assert output.is_dir()
+    assert output.stat().st_ino == reserved_inode
+    assert output.stat().st_mode & 0o777 == 0o700
+    assert not archive.exists()
+    assert not list(tmp_path.glob(".*portable-menu*"))
+
+
+def test_materialize_menu_profile_rolls_back_when_size_calculation_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    profile_path, _, _ = _write_profile(source_root)
+    output = tmp_path / "portable-menu"
+    archive = tmp_path / "portable-menu.zip"
+
+    def fail_size_calculation(_root):
+        raise OSError("INJECTED stat failure")
+
+    monkeypatch.setattr(
+        package_module,
+        "_total_file_bytes",
+        fail_size_calculation,
+    )
+    with pytest.raises(OSError, match="INJECTED stat failure"):
+        materialize_menu_profile(
+            profile_path,
+            output,
+            archive_path=archive,
+        )
+
+    assert not output.exists()
+    assert not archive.exists()
+    assert not list(tmp_path.glob(".*portable-menu*"))
 
 
 def test_menu_profile_supports_post_match_scene(tmp_path: Path) -> None:

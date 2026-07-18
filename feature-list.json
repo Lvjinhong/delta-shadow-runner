@@ -1,6 +1,6 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 15,
+  "version": 16,
   "lastUpdated": "2026-07-18",
   "features": [
     {
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：679 项测试、Ruff 通过，总覆盖率 86.60%；sdist/wheel build 通过；pip-audit 未发现锁定运行时依赖的已知漏洞；A* 与参考 Dijkstra 随机差分 1000/1000",
+        "本机 Python 3.12.12：687 项测试、Ruff 通过，总覆盖率 86.21%；sdist/wheel build 通过；pip-audit 未发现锁定运行时依赖的已知漏洞；A* 与参考 Dijkstra 随机差分 1000/1000",
         "Windows CPython 3.12.13：419 项测试、Ruff、sdist/wheel build 通过；OpenCV 平台舍入只调整测试容差，业务阈值未变"
       ]
     },
@@ -104,7 +104,8 @@
       "passes": false,
       "evidence": [
         "vision.ps1、start-game-route.cmd 与 start-windows-preflight.cmd 已实现固定依赖、配置只读校验、受控 SendInput E2E、5 秒人工切回、60 秒前台截图基准、DryRun/Armed/SessionArmed 和机器可判定汇总报告；SessionArmed 只有在截图多帧确认 IN_MATCH 后才创建局内路线 Worker",
-        "dry-run、armed、SessionArmed、ControlledE2E 与 Preflight 共用 Local\\DeltaVisionWorker mutex；菜单和路线使用同一 run_id、隔离 artifact 目录与原子 session-summary.json；独立评审确认菜单未完成不启动路线、schema v1 路线和分辨率不一致均在运行时创建前拒绝；Windows PowerShell 5.1 实际启动尚未执行"
+        "dry-run、armed、SessionArmed、ControlledE2E 与 Preflight 共用 Local\\DeltaVisionWorker mutex；菜单和路线使用同一 run_id、隔离 artifact 目录与原子 session-summary.json；独立评审确认菜单未完成不启动路线、schema v1 路线和分辨率不一致均在运行时创建前拒绝；Windows PowerShell 5.1 实际启动尚未执行",
+        "菜单 Profile 打包器会校验并复制完整引用依赖，使用原子 no-replace 目录/ZIP 发布并在失败时事务回滚；真实 2560×1440 菜单包含 6 个来源 run 与 11 个模板资产，ZIP 完整性和解压重载已验证，但局内路线 Profile 尚缺"
       ]
     },
     {

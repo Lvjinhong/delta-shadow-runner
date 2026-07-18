@@ -317,6 +317,29 @@ uv run python -m delta_vision.game_session `
 
 仓库不附带可跨账号、分辨率和 HUD 通用的真实游戏模板。需要保留你本机采集得到的完整菜单 Profile bundle；不能只复制 `menu.json` 而丢失它引用的来源清单、原始帧和模板文件。
 
+如果已有一个通过校验的菜单 Profile，可以生成只包含其引用依赖的可移植目录和 ZIP。打包器会先验证原始来源，复制被引用的完整 calibration run 与模板，再从输出目录重新加载 Profile；路径逃逸、符号链接、哈希不一致或已有输出都会失败。目录和 ZIP 都通过同文件系统临时产物原子发布，不会覆盖并发出现的同名路径；Windows 上直接生成 ZIP 时目标盘需要支持 NTFS 硬链接：
+
+```bash
+uv run python -m delta_vision.package_menu_profile \
+  --profile output/live-ui/20260716/menu-profile-v0.json \
+  --output output/windows-ready/menu-zero-cost \
+  --archive output/windows-ready/menu-zero-cost.zip
+```
+
+把 ZIP 传到 Windows 仓库根目录后执行：
+
+```powershell
+New-Item -ItemType Directory -Force profiles\menu-zero-cost | Out-Null
+Expand-Archive -LiteralPath .\menu-zero-cost.zip `
+  -DestinationPath profiles\menu-zero-cost
+
+uv run python -m delta_vision.game_session `
+  --config configs\game-route.json `
+  --validate-only
+```
+
+ZIP 根目录直接包含 `menu.json`、模板目录和来源数据集目录，因此应解压到 `profiles\menu-zero-cost`，不要再额外套一层同名目录。
+
 ## 5. 运行
 
 首次运行或修改分辨率、HUD、模板、路线配置后，应先让 `start-windows-preflight.cmd` 通过。Preflight 只证明 Windows 截图和受控输入链可用，不代表真实游戏路线已经准确。
