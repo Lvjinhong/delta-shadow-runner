@@ -88,3 +88,11 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - TDD 红灯先复现模块缺失和四类可构造绕过；最终定向 22 项、全量 456 项测试通过，总覆盖率 87.11%，Ruff 和 sdist/wheel build 通过。
 - 独立 code-reviewer 最终无 CRITICAL/HIGH/MEDIUM/LOW finding，结论 APPROVE。
 - Windows 首次恢复时 SSH 通过，随后主机离线；远端 artifact 尚未回收到本机，真实菜单模板、blind 指标和 live E2E 仍未完成，相关 feature passes 保持 false。
+
+[2026-07-18 恢复开发：受保护的绝对点击]
+- `win32_native.py` 已增加虚拟桌面绝对坐标映射与鼠标左键 down/up，四角、负虚拟原点、越界和类型错误均有单测；该阶段提交为 `2c6bbc7`。
+- `Win32InputActuator.click_left_at` 只接受未过期的视觉动作；在绝对移动前和 mouse-down 紧邻位置分别复核 F12、前台 HWND/标题与动作过期时间。
+- 绝对移动、相对移动、left-down/watchdog/left-up 共用同一鼠标事务锁，避免上一轮卡住时形成拖拽、并发点击坐标交错或相对移动改变点击落点。
+- 鼠标释放不受前台/急停闸门阻止；首次释放失败会立即重试，独立 watchdog、`release_all` 与 `expire_overdue` 继续兜底。Timer 工厂构造或启动失败也会走立即释放路径。
+- TDD 覆盖过期、失焦、卡住状态零移动、锁等待过期、并发串行、SendInput 失败、watchdog 构造/启动失败和键鼠释放失败组合；定向 39 项测试及 Ruff 通过。
+- 独立 code-reviewer 逐项复现并推动修复三类并发/异常问题，最终无 finding，结论 APPROVE。尚未在 Windows 可见桌面发送真实鼠标输入，不能标记 live E2E 通过。

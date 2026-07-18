@@ -21,6 +21,10 @@ class InputInjectionError(RuntimeError):
     """Win32 SendInput 没有完整插入一个输入事件。"""
 
 
+class ExpiredInputActionError(RuntimeError):
+    """视觉动作意图在真正输入前已经过期。"""
+
+
 class InputGateway(Protocol):
     def foreground_window_handle(self) -> int: ...
 
@@ -31,6 +35,10 @@ class InputGateway(Protocol):
     def send_key(self, scan_code: int, *, key_up: bool) -> int: ...
 
     def send_mouse_relative(self, dx: int, dy: int) -> int: ...
+
+    def send_mouse_absolute(self, screen_x: int, screen_y: int) -> int: ...
+
+    def send_mouse_left(self, *, key_up: bool) -> int: ...
 
 
 class TimerHandle(Protocol):
@@ -47,11 +55,20 @@ def _daemon_timer(interval_seconds: float, callback: Callable[[], None]) -> Time
 
 @dataclass(frozen=True, slots=True)
 class InputEvent:
-    kind: Literal["key_down", "key_up", "mouse_move"]
+    kind: Literal[
+        "key_down",
+        "key_up",
+        "mouse_move",
+        "mouse_move_absolute",
+        "mouse_left_down",
+        "mouse_left_up",
+    ]
     at_ns: int
     key: str | None = None
     dx: int | None = None
     dy: int | None = None
+    x: int | None = None
+    y: int | None = None
     reason: str | None = None
 
 
@@ -119,8 +136,11 @@ class Win32InputActuator:
         self._timer_factory = timer_factory
         self._state_lock = threading.RLock()
         self._key_locks = {key: threading.RLock() for key in self._scan_codes}
+        self._mouse_lock = threading.RLock()
         self._pressed_at: dict[str, tuple[int, object]] = {}
         self._watchdog_timers: dict[str, tuple[object, TimerHandle]] = {}
+        self._mouse_left_state: tuple[int, object] | None = None
+        self._mouse_watchdog_timer: tuple[object, TimerHandle] | None = None
         self._watchdog_error: InputInjectionError | None = None
         self._events: list[InputEvent] = []
         self._last_event_at_ns = -1
@@ -134,6 +154,11 @@ class Win32InputActuator:
     def events(self) -> tuple[InputEvent, ...]:
         with self._state_lock:
             return tuple(self._events)
+
+    @property
+    def mouse_left_pressed(self) -> bool:
+        with self._state_lock:
+            return self._mouse_left_state is not None
 
     def _scan_code(self, key: str) -> int:
         try:
@@ -206,6 +231,46 @@ class Win32InputActuator:
             self._store_watchdog_error(error)
             try:
                 self._schedule_watchdog_retry(key, token)
+            except InputInjectionError as retry_error:
+                self._store_watchdog_error(retry_error)
+
+    def _schedule_mouse_watchdog(
+        self,
+        token: object,
+        *,
+        retry: bool = False,
+    ) -> TimerHandle:
+        interval = self._WATCHDOG_RETRY_SECONDS if retry else self._max_key_hold_seconds
+        try:
+            timer = self._timer_factory(
+                interval,
+                lambda: self._watchdog_release_mouse(token),
+            )
+        except Exception as error:
+            raise InputInjectionError("无法启动鼠标左键释放看门狗") from error
+        with self._state_lock:
+            state = self._mouse_left_state
+            if state is None or state[1] is not token:
+                return timer
+            self._mouse_watchdog_timer = (token, timer)
+        try:
+            timer.start()
+        except Exception as error:
+            injection_error = InputInjectionError("无法启动鼠标左键释放看门狗")
+            raise injection_error from error
+        return timer
+
+    def _watchdog_release_mouse(self, token: object) -> None:
+        try:
+            self._release_mouse_left(
+                now_ns=self._clock_ns(),
+                reason="看门狗超过最大鼠标按下时长",
+                expected_token=token,
+            )
+        except InputInjectionError as error:
+            self._store_watchdog_error(error)
+            try:
+                self._schedule_mouse_watchdog(token, retry=True)
             except InputInjectionError as retry_error:
                 self._store_watchdog_error(retry_error)
 
@@ -285,13 +350,153 @@ class Win32InputActuator:
             return True
 
     def move_mouse_relative(self, dx: int, dy: int, *, now_ns: int) -> None:
-        self._check_new_action(now_ns=now_ns)
-        self._require_inserted(self._gateway.send_mouse_relative(dx, dy))
-        with self._state_lock:
-            effective_now_ns = self._next_event_time_locked(now_ns)
-            self._events.append(
-                InputEvent("mouse_move", effective_now_ns, dx=dx, dy=dy)
+        if type(now_ns) is not int or now_ns < 0:
+            raise ValueError("动作时间戳必须是非负整数")
+        # 相对移动与绝对点击共用同一把锁，避免改变尚未按下的点击坐标。
+        with self._mouse_lock:
+            self._check_new_action(now_ns=now_ns)
+            self._require_inserted(self._gateway.send_mouse_relative(dx, dy))
+            with self._state_lock:
+                effective_now_ns = self._next_event_time_locked(now_ns)
+                self._events.append(
+                    InputEvent("mouse_move", effective_now_ns, dx=dx, dy=dy)
+                )
+
+    def _release_mouse_left(
+        self,
+        *,
+        now_ns: int,
+        reason: str,
+        expected_token: object | None = None,
+    ) -> bool:
+        with self._mouse_lock:
+            with self._state_lock:
+                state = self._mouse_left_state
+                if state is None:
+                    return False
+                token = state[1]
+                if expected_token is not None and token is not expected_token:
+                    return False
+            # 鼠标释放和键盘释放一样，不能再被前台或急停闸门阻止。
+            self._require_inserted(self._gateway.send_mouse_left(key_up=True))
+            with self._state_lock:
+                state = self._mouse_left_state
+                if state is None or state[1] is not token:
+                    return False
+                self._mouse_left_state = None
+                timer_entry = self._mouse_watchdog_timer
+                timer = None
+                if timer_entry is not None and timer_entry[0] is token:
+                    self._mouse_watchdog_timer = None
+                    timer = timer_entry[1]
+                effective_now_ns = self._next_event_time_locked(now_ns)
+                self._events.append(
+                    InputEvent(
+                        "mouse_left_up",
+                        effective_now_ns,
+                        reason=reason,
+                    )
+                )
+            if timer is not None:
+                timer.cancel()
+            return True
+
+    @staticmethod
+    def _validate_click_timing(*, now_ns: int, expires_at_ns: int) -> None:
+        if type(now_ns) is not int or now_ns < 0:
+            raise ValueError("点击时间戳必须是非负整数")
+        if type(expires_at_ns) is not int or expires_at_ns <= 0:
+            raise ValueError("点击过期时间必须是正整数")
+        if now_ns >= expires_at_ns:
+            raise ExpiredInputActionError("视觉点击动作已经过期")
+
+    def click_left_at(
+        self,
+        screen_x: int,
+        screen_y: int,
+        *,
+        now_ns: int,
+        expires_at_ns: int,
+    ) -> None:
+        if type(screen_x) is not int or type(screen_y) is not int:
+            raise ValueError("点击屏幕坐标必须是整数")
+        self._validate_click_timing(now_ns=now_ns, expires_at_ns=expires_at_ns)
+        # 绝对移动与按下/释放必须是一笔不可交错的事务。否则并发点击会在
+        # 其他坐标按下，或在上一轮左键卡住时把移动变成拖拽。
+        with self._mouse_lock:
+            transaction_now_ns = self._clock_ns()
+            self._validate_click_timing(
+                now_ns=transaction_now_ns,
+                expires_at_ns=expires_at_ns,
             )
+            self._check_new_action(now_ns=transaction_now_ns)
+            with self._state_lock:
+                if self._mouse_left_state is not None:
+                    raise InputInjectionError("上一次鼠标左键尚未释放")
+
+            self._require_inserted(
+                self._gateway.send_mouse_absolute(screen_x, screen_y)
+            )
+            with self._state_lock:
+                effective_now_ns = self._next_event_time_locked(transaction_now_ns)
+                self._events.append(
+                    InputEvent(
+                        "mouse_move_absolute",
+                        effective_now_ns,
+                        x=screen_x,
+                        y=screen_y,
+                    )
+                )
+
+            dispatch_now_ns = self._clock_ns()
+            self._validate_click_timing(
+                now_ns=dispatch_now_ns,
+                expires_at_ns=expires_at_ns,
+            )
+            self._check_new_action(now_ns=dispatch_now_ns)
+            with self._state_lock:
+                if self._mouse_left_state is not None:
+                    raise InputInjectionError("上一次鼠标左键尚未释放")
+            token = object()
+            self._require_inserted(self._gateway.send_mouse_left(key_up=False))
+            with self._state_lock:
+                effective_down_ns = self._next_event_time_locked(dispatch_now_ns)
+                self._mouse_left_state = (effective_down_ns, token)
+                self._events.append(InputEvent("mouse_left_down", effective_down_ns))
+            try:
+                self._schedule_mouse_watchdog(token)
+            except InputInjectionError as watchdog_error:
+                try:
+                    self._release_mouse_left(
+                        now_ns=self._clock_ns(),
+                        reason="看门狗启动失败，立即释放鼠标左键",
+                        expected_token=token,
+                    )
+                except InputInjectionError as release_error:
+                    raise InputInjectionError(
+                        "无法启动鼠标左键释放看门狗，且立即释放也失败"
+                    ) from release_error
+                raise watchdog_error
+
+            first_release_error: InputInjectionError | None = None
+            try:
+                self._release_mouse_left(
+                    now_ns=self._clock_ns(),
+                    reason="点击完成",
+                    expected_token=token,
+                )
+            except InputInjectionError as error:
+                first_release_error = error
+                try:
+                    self._release_mouse_left(
+                        now_ns=self._clock_ns(),
+                        reason="鼠标左键释放重试",
+                        expected_token=token,
+                    )
+                except InputInjectionError:
+                    pass
+            if first_release_error is not None:
+                raise first_release_error
 
     def release_all(self, *, now_ns: int, reason: str) -> None:
         with self._state_lock:
@@ -309,6 +514,10 @@ class Win32InputActuator:
                 )
             except InputInjectionError as error:
                 first_error = first_error or error
+        try:
+            self._release_mouse_left(now_ns=now_ns, reason=reason)
+        except InputInjectionError as error:
+            first_error = first_error or error
         if first_error is not None:
             raise first_error
 
@@ -323,6 +532,7 @@ class Win32InputActuator:
                     if now_ns - state[0] >= self._max_key_hold_ns
                 )
             )
+            mouse_state = self._mouse_left_state
         first_error: InputInjectionError | None = None
         for key, token in expired_states:
             try:
@@ -334,9 +544,25 @@ class Win32InputActuator:
                 )
             except InputInjectionError as error:
                 first_error = first_error or error
+        mouse_expired = bool(
+            mouse_state is not None
+            and now_ns - mouse_state[0] >= self._max_key_hold_ns
+        )
+        if mouse_expired and mouse_state is not None:
+            try:
+                self._release_mouse_left(
+                    now_ns=now_ns,
+                    reason="超过最大鼠标按下时长",
+                    expected_token=mouse_state[1],
+                )
+            except InputInjectionError as error:
+                first_error = first_error or error
         if first_error is not None:
             self._store_watchdog_error(first_error)
             raise first_error
         if watchdog_error is not None:
             raise watchdog_error
-        return tuple(key for key, _ in expired_states)
+        expired_names = [key for key, _ in expired_states]
+        if mouse_expired:
+            expired_names.append("mouse_left")
+        return tuple(expired_names)

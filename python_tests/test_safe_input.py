@@ -4,6 +4,7 @@ import pytest
 
 from delta_vision.safe_input import (
     EmergencyStopError,
+    ExpiredInputActionError,
     ForegroundWindowError,
     InputInjectionError,
     SafetyGate,
@@ -18,6 +19,8 @@ class FakeGateway:
         self.emergency_pressed = False
         self.sent = []
         self.inserted_count = 1
+        self.absolute_inserted_count = 1
+        self.mouse_left_results: list[int] = []
 
     def foreground_title(self) -> str:
         return self.title
@@ -35,6 +38,16 @@ class FakeGateway:
 
     def send_mouse_relative(self, dx: int, dy: int) -> int:
         self.sent.append(("mouse", dx, dy))
+        return self.inserted_count
+
+    def send_mouse_absolute(self, screen_x: int, screen_y: int) -> int:
+        self.sent.append(("mouse_absolute", screen_x, screen_y))
+        return self.absolute_inserted_count
+
+    def send_mouse_left(self, *, key_up: bool) -> int:
+        self.sent.append(("mouse_left", key_up))
+        if self.mouse_left_results:
+            return self.mouse_left_results.pop(0)
         return self.inserted_count
 
 
@@ -191,6 +204,436 @@ def test_win32_actuator_sends_relative_mouse_motion() -> None:
     actuator.move_mouse_relative(12, -7, now_ns=1)
 
     assert gateway.sent == [("mouse", 12, -7)]
+
+
+def test_win32_actuator_clicks_at_absolute_position_and_releases_button() -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    actuator.click_left_at(
+        500,
+        600,
+        now_ns=100,
+        expires_at_ns=200,
+    )
+
+    assert gateway.sent == [
+        ("mouse_absolute", 500, 600),
+        ("mouse_left", False),
+        ("mouse_left", True),
+    ]
+    assert actuator.mouse_left_pressed is False
+    assert [event.kind for event in actuator.events] == [
+        "mouse_move_absolute",
+        "mouse_left_down",
+        "mouse_left_up",
+    ]
+    assert actuator.events[0].x == 500
+    assert actuator.events[0].y == 600
+
+
+def test_win32_actuator_rejects_expired_click_before_any_input() -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 200)
+
+    with pytest.raises(ExpiredInputActionError, match="过期"):
+        actuator.click_left_at(500, 600, now_ns=200, expires_at_ns=200)
+
+    assert gateway.sent == []
+    assert actuator.mouse_left_pressed is False
+
+
+def test_win32_actuator_rechecks_expiry_after_pointer_move() -> None:
+    gateway = FakeGateway()
+    clock_values = iter((150, 201))
+    actuator = _actuator(gateway, clock_ns=lambda: next(clock_values))
+
+    with pytest.raises(ExpiredInputActionError, match="过期"):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == [("mouse_absolute", 500, 600)]
+    assert actuator.mouse_left_pressed is False
+
+
+def test_win32_actuator_does_not_move_while_previous_left_down_is_stuck() -> None:
+    gateway = FakeGateway()
+    gateway.mouse_left_results = [1, 0, 0]
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    with pytest.raises(InputInjectionError):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+    sent_before_retry = list(gateway.sent)
+
+    with pytest.raises(InputInjectionError, match="尚未释放"):
+        actuator.click_left_at(700, 800, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == sent_before_retry
+    assert ("mouse_absolute", 700, 800) not in gateway.sent
+
+
+def test_win32_actuator_rechecks_expiry_after_waiting_for_mouse_lock() -> None:
+    gateway = FakeGateway()
+    clock_now = [150]
+    actuator = _actuator(gateway, clock_ns=lambda: clock_now[0])
+    started = threading.Event()
+    errors: list[BaseException] = []
+
+    def click_after_lock() -> None:
+        started.set()
+        try:
+            actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+        except BaseException as error:
+            errors.append(error)
+
+    # 精确复现点击事务等待锁的竞态。
+    with actuator._mouse_lock:
+        thread = threading.Thread(target=click_after_lock)
+        thread.start()
+        assert started.wait(timeout=1)
+        clock_now[0] = 201
+
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ExpiredInputActionError)
+    assert gateway.sent == []
+
+
+def test_win32_actuator_serializes_absolute_move_and_click_transaction() -> None:
+    class BlockingAbsoluteGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_moved = threading.Event()
+            self.release_first = threading.Event()
+            self.second_moved = threading.Event()
+
+        def send_mouse_absolute(self, screen_x: int, screen_y: int) -> int:
+            inserted = super().send_mouse_absolute(screen_x, screen_y)
+            if (screen_x, screen_y) == (100, 200):
+                self.first_moved.set()
+                assert self.release_first.wait(timeout=1)
+            else:
+                self.second_moved.set()
+            return inserted
+
+    gateway = BlockingAbsoluteGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+    errors: list[BaseException] = []
+
+    def click(x: int, y: int) -> None:
+        try:
+            actuator.click_left_at(x, y, now_ns=100, expires_at_ns=200)
+        except BaseException as error:
+            errors.append(error)
+
+    first = threading.Thread(target=click, args=(100, 200))
+    second = threading.Thread(target=click, args=(300, 400))
+    first.start()
+    assert gateway.first_moved.wait(timeout=1)
+    second.start()
+    assert not gateway.second_moved.wait(timeout=0.05)
+    gateway.release_first.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not errors
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert gateway.sent == [
+        ("mouse_absolute", 100, 200),
+        ("mouse_left", False),
+        ("mouse_left", True),
+        ("mouse_absolute", 300, 400),
+        ("mouse_left", False),
+        ("mouse_left", True),
+    ]
+
+
+def test_relative_move_waits_until_absolute_click_transaction_finishes() -> None:
+    class BlockingAbsoluteGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.absolute_moved = threading.Event()
+            self.release_absolute = threading.Event()
+            self.relative_moved = threading.Event()
+
+        def send_mouse_absolute(self, screen_x: int, screen_y: int) -> int:
+            inserted = super().send_mouse_absolute(screen_x, screen_y)
+            self.absolute_moved.set()
+            assert self.release_absolute.wait(timeout=1)
+            return inserted
+
+        def send_mouse_relative(self, dx: int, dy: int) -> int:
+            inserted = super().send_mouse_relative(dx, dy)
+            self.relative_moved.set()
+            return inserted
+
+    gateway = BlockingAbsoluteGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+    errors: list[BaseException] = []
+
+    def click() -> None:
+        try:
+            actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+        except BaseException as error:
+            errors.append(error)
+
+    def move() -> None:
+        try:
+            actuator.move_mouse_relative(25, 0, now_ns=160)
+        except BaseException as error:
+            errors.append(error)
+
+    click_thread = threading.Thread(target=click)
+    move_thread = threading.Thread(target=move)
+    click_thread.start()
+    assert gateway.absolute_moved.wait(timeout=1)
+    move_thread.start()
+    assert not gateway.relative_moved.wait(timeout=0.05)
+    gateway.release_absolute.set()
+    click_thread.join(timeout=1)
+    move_thread.join(timeout=1)
+
+    assert not errors
+    assert not click_thread.is_alive()
+    assert not move_thread.is_alive()
+    assert gateway.sent == [
+        ("mouse_absolute", 500, 600),
+        ("mouse_left", False),
+        ("mouse_left", True),
+        ("mouse", 25, 0),
+    ]
+
+
+def test_win32_actuator_rechecks_foreground_after_pointer_move() -> None:
+    class FocusLosingGateway(FakeGateway):
+        def send_mouse_absolute(self, screen_x: int, screen_y: int) -> int:
+            inserted = super().send_mouse_absolute(screen_x, screen_y)
+            self.title = "Other Window"
+            return inserted
+
+    gateway = FocusLosingGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    with pytest.raises(ForegroundWindowError):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == [("mouse_absolute", 500, 600)]
+    assert actuator.mouse_left_pressed is False
+
+
+def test_win32_actuator_always_releases_mouse_after_focus_changes_on_down() -> None:
+    class FocusLosingGateway(FakeGateway):
+        def send_mouse_left(self, *, key_up: bool) -> int:
+            inserted = super().send_mouse_left(key_up=key_up)
+            if not key_up:
+                self.title = "Other Window"
+            return inserted
+
+    gateway = FocusLosingGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent[-2:] == [("mouse_left", False), ("mouse_left", True)]
+    assert actuator.mouse_left_pressed is False
+
+
+def test_win32_actuator_recovers_mouse_up_after_first_release_failure() -> None:
+    gateway = FakeGateway()
+    gateway.mouse_left_results = [1, 0, 1]
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    with pytest.raises(InputInjectionError, match="SendInput"):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent[-3:] == [
+        ("mouse_left", False),
+        ("mouse_left", True),
+        ("mouse_left", True),
+    ]
+    assert actuator.mouse_left_pressed is False
+
+
+def test_release_all_retries_mouse_up_after_click_release_failures() -> None:
+    gateway = FakeGateway()
+    gateway.mouse_left_results = [1, 0, 0, 1]
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    with pytest.raises(InputInjectionError):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+    assert actuator.mouse_left_pressed is True
+
+    actuator.release_all(now_ns=160, reason="测试清理")
+
+    assert actuator.mouse_left_pressed is False
+    assert actuator.events[-1].kind == "mouse_left_up"
+    assert actuator.events[-1].reason == "测试清理"
+
+
+def test_win32_actuator_does_not_press_mouse_when_absolute_move_fails() -> None:
+    gateway = FakeGateway()
+    gateway.absolute_inserted_count = 0
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    with pytest.raises(InputInjectionError):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == [("mouse_absolute", 500, 600)]
+    assert actuator.mouse_left_pressed is False
+
+
+def test_win32_actuator_does_not_track_mouse_when_left_down_fails() -> None:
+    gateway = FakeGateway()
+    gateway.mouse_left_results = [0]
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    with pytest.raises(InputInjectionError):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent[-1] == ("mouse_left", False)
+    assert actuator.mouse_left_pressed is False
+
+
+def test_mouse_watchdog_releases_button_without_control_loop_progress() -> None:
+    gateway = FakeGateway()
+    gateway.mouse_left_results = [1, 0, 0, 1]
+    timers = FakeTimerFactory()
+    actuator = _actuator(
+        gateway,
+        clock_ns=lambda: 351_000_000,
+        timer_factory=timers,
+    )
+
+    with pytest.raises(InputInjectionError):
+        actuator.click_left_at(
+            500,
+            600,
+            now_ns=100_000_000,
+            expires_at_ns=500_000_000,
+        )
+    assert actuator.mouse_left_pressed is True
+    assert timers.timers[0].started is True
+
+    timers.timers[0].fire()
+
+    assert actuator.mouse_left_pressed is False
+    assert actuator.events[-1].reason == "看门狗超过最大鼠标按下时长"
+
+
+def test_mouse_watchdog_start_failure_releases_without_poisoning_next_action() -> None:
+    class FailingStartTimer(FakeTimer):
+        def start(self) -> None:
+            raise RuntimeError("timer start failed")
+
+    class FailingStartTimerFactory:
+        def __call__(self, interval_seconds: float, callback) -> FailingStartTimer:
+            return FailingStartTimer(interval_seconds, callback)
+
+    gateway = FakeGateway()
+    actuator = _actuator(
+        gateway,
+        clock_ns=lambda: 150,
+        timer_factory=FailingStartTimerFactory(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(InputInjectionError, match="看门狗"):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert actuator.mouse_left_pressed is False
+    actuator.move_mouse_relative(1, 2, now_ns=160)
+    assert gateway.sent[-1] == ("mouse", 1, 2)
+
+
+def test_mouse_watchdog_factory_failure_immediately_releases_button() -> None:
+    class FailingTimerFactory:
+        def __call__(self, interval_seconds: float, callback) -> FakeTimer:
+            raise RuntimeError("timer factory failed")
+
+    gateway = FakeGateway()
+    actuator = _actuator(
+        gateway,
+        clock_ns=lambda: 150,
+        timer_factory=FailingTimerFactory(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(InputInjectionError, match="看门狗"):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == [
+        ("mouse_absolute", 500, 600),
+        ("mouse_left", False),
+        ("mouse_left", True),
+    ]
+    assert actuator.mouse_left_pressed is False
+
+
+def test_mouse_watchdog_start_and_immediate_release_failure_stays_recoverable() -> None:
+    class FailingStartTimer(FakeTimer):
+        def start(self) -> None:
+            raise RuntimeError("timer start failed")
+
+    class FailingStartTimerFactory:
+        def __call__(self, interval_seconds: float, callback) -> FailingStartTimer:
+            return FailingStartTimer(interval_seconds, callback)
+
+    gateway = FakeGateway()
+    gateway.mouse_left_results = [1, 0]
+    actuator = _actuator(
+        gateway,
+        clock_ns=lambda: 150,
+        timer_factory=FailingStartTimerFactory(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(InputInjectionError, match="立即释放也失败"):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert actuator.mouse_left_pressed is True
+    actuator.release_all(now_ns=160, reason="测试清理")
+    assert actuator.mouse_left_pressed is False
+
+
+def test_release_all_attempts_mouse_after_keyboard_release_failure() -> None:
+    class KeyboardReleaseFailingGateway(FakeGateway):
+        def send_key(self, scan_code: int, *, key_up: bool) -> int:
+            self.sent.append(("key", scan_code, key_up))
+            return 0 if key_up else 1
+
+    gateway = KeyboardReleaseFailingGateway()
+    gateway.mouse_left_results = [1, 0, 0, 1]
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+    actuator.key_down("w", now_ns=1)
+    with pytest.raises(InputInjectionError):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    with pytest.raises(InputInjectionError):
+        actuator.release_all(now_ns=160, reason="异常清理")
+
+    assert actuator.mouse_left_pressed is False
+    assert ("mouse_left", True) in gateway.sent
+
+
+@pytest.mark.parametrize(
+    ("now_ns", "expires_at_ns"),
+    [(True, 200), (100, True), (-1, 200), (100, 0), (200, 200)],
+)
+def test_win32_actuator_rejects_invalid_or_expired_click_timing_without_input(
+    now_ns: object,
+    expires_at_ns: object,
+) -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway)
+
+    with pytest.raises((ValueError, ExpiredInputActionError)):
+        actuator.click_left_at(
+            500,
+            600,
+            now_ns=now_ns,  # type: ignore[arg-type]
+            expires_at_ns=expires_at_ns,  # type: ignore[arg-type]
+        )
+
+    assert gateway.sent == []
 
 
 def test_win32_actuator_rechecks_gate_between_mouse_and_key_steps() -> None:
