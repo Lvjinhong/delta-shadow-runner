@@ -78,3 +78,13 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 持久目标保持进行中；大厅正式状态机、真实出生 blind 数据、ORB/SIFT A/B、固定短路线、保险箱/退出闭环和真实游戏成功率都未完成。
 - 下次从新截图确认当前页面开始，先下载已有真实截图做离线 TDD，再实现 fail-closed 菜单状态机。
 - 完整状态与恢复顺序见 `docs/checkpoints/2026-07-18-development-pause.md`。
+
+[2026-07-18 恢复开发：截图菜单状态机]
+- 新增独立 `menu_automation.py`，没有把页面状态伪装成路线 waypoint；页面流程和局内导航保持两个控制器。
+- 页面分类固定期望分辨率，复用模板匹配阈值与歧义拒绝；页面锚点和动作锚点必须是不同 detector，动作锚点还必须落在显式允许点击 ROI。
+- 零成本流程以 3 个严格递增、750ms 内、页面/动作锚点漂移不超过 12px 的一致帧确认；点击点使用三帧中位数。
+- 每个页面动作只生成一次并锁存，必须等待目标页面重新确认；8 秒超时不重试，死亡页、旧帧、未来帧、乱序帧、低置信、歧义和分辨率变化均不产生动作。
+- 每个动作意图携带绝对过期时间；下一阶段 actuator 接入必须在实际 SendInput 前再次校验，当前尚未发送真实点击。
+- TDD 红灯先复现模块缺失和四类可构造绕过；最终定向 22 项、全量 456 项测试通过，总覆盖率 87.11%，Ruff 和 sdist/wheel build 通过。
+- 独立 code-reviewer 最终无 CRITICAL/HIGH/MEDIUM/LOW finding，结论 APPROVE。
+- Windows 首次恢复时 SSH 通过，随后主机离线；远端 artifact 尚未回收到本机，真实菜单模板、blind 指标和 live E2E 仍未完成，相关 feature passes 保持 false。
