@@ -68,3 +68,13 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - `M` 按键已成功插入，但采集时已进入“最终倒地”页，因此不能记为战术地图打开成功。
 - 结算页“下一步”空格已发送；用户随即要求断开主机，本次没有再读取当前画面。恢复时必须从新截图重新确认状态。
 - 详细证据、Windows artifact 路径和恢复顺序见 `docs/checkpoints/2026-07-16-zero-cost-zero-dam.md`。
+
+[2026-07-18 开发暂停检查点]
+- 用户准备关闭本机并断开 Windows 主机，本轮只保存状态，没有继续开发，也没有向游戏发送键鼠输入。
+- macOS/GitHub 当前提交为 `2eb57c964cb68c17b388ac1f706dbd638375aa96`；Windows 仍为 `ff7a38fa9402f74b600d1adc62dd06dc647becfc`，只缺检查点文档提交，运行源码一致。
+- Windows 工作区仅有预期未跟踪运行产物 `artifacts/`、`node_modules/`、`playwright-report/`、`test-results/`，恢复时必须保留。
+- 2026-07-18 macOS 基线重跑：434 项测试通过，总覆盖率 87.64%，Ruff、sdist/wheel build 通过。
+- publickey-only SSH 健康检查通过；只读截图探针未找到 `三角洲行动  ` 游戏窗口，未生成新数据集，本轮没有任何输入动作。
+- 持久目标保持进行中；大厅正式状态机、真实出生 blind 数据、ORB/SIFT A/B、固定短路线、保险箱/退出闭环和真实游戏成功率都未完成。
+- 下次从新截图确认当前页面开始，先下载已有真实截图做离线 TDD，再实现 fail-closed 菜单状态机。
+- 完整状态与恢复顺序见 `docs/checkpoints/2026-07-18-development-pause.md`。
