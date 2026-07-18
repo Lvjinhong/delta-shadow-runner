@@ -6,15 +6,28 @@ from dataclasses import dataclass
 from typing import Literal
 
 
+class ExpiredDryRunActionError(RuntimeError):
+    """dry-run 视觉动作意图在记录前已经过期。"""
+
+
 @dataclass(frozen=True, slots=True)
 class ActionEvent:
-    kind: Literal["key_down", "key_up", "mouse_move"]
+    kind: Literal[
+        "key_down",
+        "key_up",
+        "mouse_move",
+        "mouse_move_absolute",
+        "mouse_left_down",
+        "mouse_left_up",
+    ]
     key: str | None
     at_ns: int
     dry_run: bool
     reason: str | None = None
     dx: int | None = None
     dy: int | None = None
+    x: int | None = None
+    y: int | None = None
 
 
 class DryRunActuator:
@@ -80,6 +93,51 @@ class DryRunActuator:
                 dry_run=True,
                 dx=dx,
                 dy=dy,
+            )
+        )
+
+    def click_left_at(
+        self,
+        screen_x: int,
+        screen_y: int,
+        *,
+        now_ns: int,
+        expires_at_ns: int,
+    ) -> None:
+        if type(screen_x) is not int or type(screen_y) is not int:
+            raise ValueError("点击屏幕坐标必须是整数")
+        if type(now_ns) is not int or now_ns < 0:
+            raise ValueError("点击时间戳必须是非负整数")
+        if type(expires_at_ns) is not int or expires_at_ns <= 0:
+            raise ValueError("点击过期时间必须是正整数")
+        effective_now_ns = max(now_ns, self._last_event_at_ns)
+        if effective_now_ns >= expires_at_ns:
+            raise ExpiredDryRunActionError("dry-run 视觉点击动作已经过期")
+
+        effective_now_ns = self._next_event_time(effective_now_ns)
+        self._events.extend(
+            (
+                ActionEvent(
+                    "mouse_move_absolute",
+                    None,
+                    effective_now_ns,
+                    dry_run=True,
+                    x=screen_x,
+                    y=screen_y,
+                ),
+                ActionEvent(
+                    "mouse_left_down",
+                    None,
+                    effective_now_ns,
+                    dry_run=True,
+                ),
+                ActionEvent(
+                    "mouse_left_up",
+                    None,
+                    effective_now_ns,
+                    dry_run=True,
+                    reason="点击完成",
+                ),
             )
         )
 

@@ -1,6 +1,6 @@
 import pytest
 
-from delta_vision.actuator import DryRunActuator
+from delta_vision.actuator import DryRunActuator, ExpiredDryRunActionError
 
 
 def test_dry_run_actuator_tracks_pressed_keys_and_releases_all() -> None:
@@ -39,6 +39,74 @@ def test_dry_run_mouse_move_records_delta_without_pressing_key() -> None:
         True,
     )
     assert actuator.pressed_keys == frozenset()
+
+
+def test_dry_run_absolute_click_records_same_three_phase_audit_as_armed() -> None:
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+
+    actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert [event.kind for event in actuator.events] == [
+        "mouse_move_absolute",
+        "mouse_left_down",
+        "mouse_left_up",
+    ]
+    assert [(event.x, event.y) for event in actuator.events] == [
+        (500, 600),
+        (None, None),
+        (None, None),
+    ]
+    assert all(event.dry_run for event in actuator.events)
+
+
+def test_dry_run_absolute_click_rejects_expired_intent_without_event() -> None:
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+
+    with pytest.raises(ExpiredDryRunActionError, match="过期"):
+        actuator.click_left_at(500, 600, now_ns=200, expires_at_ns=200)
+
+    assert actuator.events == ()
+
+
+def test_dry_run_absolute_click_rejects_intent_older_than_audit_clock() -> None:
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+    actuator.key_down("w", now_ns=300)
+    events_before_click = actuator.events
+
+    with pytest.raises(ExpiredDryRunActionError, match="过期"):
+        actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert actuator.events == events_before_click
+
+
+@pytest.mark.parametrize(
+    ("screen_x", "screen_y", "now_ns", "expires_at_ns"),
+    [
+        (True, 600, 100, 200),
+        (500, 1.5, 100, 200),
+        (500, 600, True, 200),
+        (500, 600, -1, 200),
+        (500, 600, 100, True),
+        (500, 600, 100, 0),
+    ],
+)
+def test_dry_run_absolute_click_rejects_invalid_values_without_event(
+    screen_x: object,
+    screen_y: object,
+    now_ns: object,
+    expires_at_ns: object,
+) -> None:
+    actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
+
+    with pytest.raises(ValueError):
+        actuator.click_left_at(
+            screen_x,  # type: ignore[arg-type]
+            screen_y,  # type: ignore[arg-type]
+            now_ns=now_ns,  # type: ignore[arg-type]
+            expires_at_ns=expires_at_ns,  # type: ignore[arg-type]
+        )
+
+    assert actuator.events == ()
 
 
 def test_dry_run_actuator_expires_overdue_key_holds() -> None:
