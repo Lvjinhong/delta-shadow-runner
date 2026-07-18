@@ -22,6 +22,7 @@ class MenuScene(StrEnum):
     ZERO_DAM_READY = "zero_dam_ready"
     IN_MATCH = "in_match"
     DEATH_SUMMARY = "death_summary"
+    POST_MATCH = "post_match"
 
 
 class SceneDecisionReason(StrEnum):
