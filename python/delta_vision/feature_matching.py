@@ -212,6 +212,18 @@ class LocalFeatureAnchorDetector:
         self._descriptor_metric = "hamming" if backend is FeatureBackend.ORB else "l2"
         self._norm = cv2.NORM_HAMMING if backend is FeatureBackend.ORB else cv2.NORM_L2
 
+    @property
+    def label(self) -> str:
+        return self._label
+
+    @property
+    def waypoint_id(self) -> str:
+        return self._waypoint_id
+
+    @property
+    def backend(self) -> FeatureBackend:
+        return self._backend
+
     @staticmethod
     def _validate_image(image: NDArray[np.uint8], *, field: str) -> None:
         if (
@@ -333,11 +345,13 @@ class LocalFeatureAnchorDetector:
         )
         if min(edges) < self._policy.minimum_projected_edge_px:
             return False
+        # Homography 即使为恒等变换也可能产生约 1e-14 的浮点越界。
+        bound_tolerance = maximum_outside_px + 1e-3
         return bool(
-            np.all(quad[:, 0] >= -maximum_outside_px)
-            and np.all(quad[:, 1] >= -maximum_outside_px)
-            and np.all(quad[:, 0] <= self._search_roi.width + maximum_outside_px)
-            and np.all(quad[:, 1] <= self._search_roi.height + maximum_outside_px)
+            np.all(quad[:, 0] >= -bound_tolerance)
+            and np.all(quad[:, 1] >= -bound_tolerance)
+            and np.all(quad[:, 0] <= self._search_roi.width + bound_tolerance)
+            and np.all(quad[:, 1] <= self._search_roi.height + bound_tolerance)
         )
 
     def _geometry(

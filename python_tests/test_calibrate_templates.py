@@ -9,17 +9,20 @@ import numpy as np
 import pytest
 
 from delta_vision.calibrate_templates import (
+    FeatureMatcherConfiguration,
     MatcherConfiguration,
     NormalizedRoi,
     calibrate_templates,
     main,
 )
+from delta_vision.feature_matching import FeatureBackend
 from delta_vision.frames import (
     CapturedFrame,
     DatasetContentDigest,
     FrameRecorder,
     frame_content_sha256,
 )
+from delta_vision.navigation import ObservationScope
 from delta_vision.template_profile import load_template_profile
 
 
@@ -156,6 +159,78 @@ def test_matcher_configuration_rejects_invalid_contract(field, value) -> None:
 
     with pytest.raises(ValueError):
         MatcherConfiguration(**values)
+
+
+def test_feature_matcher_configuration_has_traceable_backend_defaults() -> None:
+    configuration = FeatureMatcherConfiguration.default(FeatureBackend.SIFT)
+
+    assert configuration.backend is FeatureBackend.SIFT
+    assert configuration.maximum_features == 3000
+    assert configuration.policy.minimum_inliers >= 4
+    assert configuration.to_manifest()["backend"] == "sift"
+
+
+def test_calibrate_templates_can_emit_loadable_sift_profile(tmp_path) -> None:
+    dataset, frames = _dataset(tmp_path)
+    labels_path = tmp_path / "labels.jsonl"
+    _write_labels(
+        labels_path,
+        [
+            _label(
+                roi={
+                    "id": "scene",
+                    "x": 0,
+                    "y": 0,
+                    "width": 1,
+                    "height": 1,
+                }
+            )
+        ],
+    )
+
+    result = calibrate_templates(
+        dataset_directory=dataset,
+        labels_path=labels_path,
+        output_directory=tmp_path / "sift-profile",
+        matcher=MatcherConfiguration.default(),
+        feature_matcher=FeatureMatcherConfiguration.default(FeatureBackend.SIFT),
+    )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    profile = load_template_profile(result.manifest_path)
+    observation = profile.observer.observe(
+        frames[0],
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
+
+    assert manifest["feature_matcher"]["backend"] == "sift"
+    assert observation.waypoint_id == "spawn"
+
+
+def test_feature_calibration_rejects_inconsistent_waypoint_positions_before_writing(
+    tmp_path,
+) -> None:
+    dataset, _frames = _dataset(tmp_path)
+    labels_path = tmp_path / "labels.jsonl"
+    full_roi = {"id": "scene", "x": 0, "y": 0, "width": 1, "height": 1}
+    first = _label(sequence=0, template_id="spawn-day", roi=full_roi)
+    first["waypoint_id"] = "spawn"
+    first["route_position"] = [0.0, 0.0]
+    second = _label(sequence=1, template_id="spawn-night", roi=full_roi)
+    second["waypoint_id"] = "spawn"
+    second["route_position"] = [10.0, 0.0]
+    _write_labels(labels_path, [first, second])
+    output = tmp_path / "sift-profile"
+
+    with pytest.raises(ValueError, match=r"同一 waypoint.*路线坐标"):
+        calibrate_templates(
+            dataset_directory=dataset,
+            labels_path=labels_path,
+            output_directory=output,
+            matcher=MatcherConfiguration.default(),
+            feature_matcher=FeatureMatcherConfiguration.default(FeatureBackend.SIFT),
+        )
+
+    assert not output.exists()
 
 
 def test_calibrate_templates_crops_exact_pixels_and_writes_traceable_profile(
@@ -623,3 +698,44 @@ def test_main_reports_success_and_failure(tmp_path, capsys) -> None:
         == 1
     )
     assert "模板标定失败" in capsys.readouterr().err
+
+
+def test_main_can_emit_feature_profile_from_cli_flags(tmp_path, capsys) -> None:
+    dataset, _ = _dataset(tmp_path)
+    labels_path = tmp_path / "labels.jsonl"
+    _write_labels(
+        labels_path,
+        [
+            _label(
+                roi={
+                    "id": "scene",
+                    "x": 0,
+                    "y": 0,
+                    "width": 1,
+                    "height": 1,
+                }
+            )
+        ],
+    )
+    output = tmp_path / "feature-profile"
+
+    result = main(
+        [
+            "--dataset",
+            str(dataset),
+            "--labels",
+            str(labels_path),
+            "--output",
+            str(output),
+            "--feature-backend",
+            "sift",
+            "--maximum-features",
+            "1200",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    manifest = json.loads((output / "templates.json").read_text(encoding="utf-8"))
+
+    assert result == 0
+    assert payload["feature_backend"] == "sift"
+    assert manifest["feature_matcher"]["maximum_features"] == 1200

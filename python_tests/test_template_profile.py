@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
+from delta_vision.feature_navigation import FeatureWaypointObserver
 from delta_vision.frames import CapturedFrame, DatasetContentDigest
 from delta_vision.navigation import ObservationScope
 from delta_vision.template_profile import load_template_profile
@@ -51,9 +52,7 @@ def _manifest(tmp_path: Path) -> tuple[Path, dict]:
                     {"sequence": 20, "sha256": "2" * 64},
                 ],
                 "perception_sha256s": ["a" * 64, "b" * 64],
-                "dataset_content_sha256": _dataset_digest(
-                    [(10, "1" * 64), (20, "2" * 64)]
-                ),
+                "dataset_content_sha256": _dataset_digest([(10, "1" * 64), (20, "2" * 64)]),
                 "run_json_sha256": "c" * 64,
                 "frame_manifest_sha256": "d" * 64,
             }
@@ -92,6 +91,48 @@ def _write_manifest(path: Path, manifest: object) -> None:
     path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
+def _feature_template(seed: int) -> np.ndarray:
+    image = np.random.default_rng(seed).integers(
+        0,
+        256,
+        size=(64, 80, 3),
+        dtype=np.uint8,
+    )
+    cv2.rectangle(image, (3, 3), (76, 60), (255, 255, 255), 2)
+    cv2.line(image, (5, 55), (70, 8), (0, 0, 0), 3)
+    cv2.putText(
+        image,
+        "A1",
+        (18, 42),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return image
+
+
+def _enable_sift(manifest: dict) -> None:
+    manifest["feature_matcher"] = {
+        "backend": "sift",
+        "maximum_features": 1000,
+        "ratio_threshold": 0.75,
+        "ransac_reprojection_threshold_px": 3,
+        "minimum_good_matches": 8,
+        "minimum_inliers": 6,
+        "minimum_inlier_ratio": 0.5,
+        "maximum_reprojection_rmse_px": 4,
+        "maximum_reprojection_p95_px": 6,
+        "minimum_source_coverage": 0.05,
+        "minimum_target_coverage": 0.02,
+        "minimum_projected_area_ratio": 0.1,
+        "maximum_projected_area_ratio": 0.9,
+        "maximum_homography_condition_number": 100_000_000,
+        "secondary_minimum_inliers": 6,
+    }
+
+
 def test_load_template_profile_builds_traceable_route_observer(tmp_path) -> None:
     path, _ = _manifest(tmp_path)
     profile = load_template_profile(path)
@@ -112,6 +153,77 @@ def test_load_template_profile_builds_traceable_route_observer(tmp_path) -> None
     assert len(profile.perception_regions) == 1
     assert observation.centroid == (200.0, 10.0)
     assert observation.waypoint_id == "turn"
+
+
+def test_load_template_profile_can_build_sift_feature_observer(tmp_path) -> None:
+    path, manifest = _manifest(tmp_path)
+    image = _feature_template(20260718)
+    manifest["templates"][0]["sha256"] = _write_image(
+        tmp_path / "templates" / "first.png",
+        image,
+    )
+    _enable_sift(manifest)
+    _write_manifest(path, manifest)
+
+    profile = load_template_profile(path)
+    frame = np.zeros((120, 180, 3), dtype=np.uint8)
+    frame[18:82, 35:115] = image
+    frame.setflags(write=False)
+    observation = profile.observer.observe(
+        CapturedFrame(1, 2, frame, "fixture"),
+        scope=ObservationScope(allowed_waypoint_ids=None),
+    )
+
+    assert isinstance(profile.observer, FeatureWaypointObserver)
+    assert observation.waypoint_id == "turn"
+    assert observation.centroid == (200.0, 10.0)
+    assert observation.confidence > 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_match"),
+    [
+        ("backend", "surf", "backend"),
+        ("maximum_features", 31, "maximum_features"),
+        ("ratio_threshold", 1, "ratio_threshold"),
+        ("minimum_inliers", True, "匹配数"),
+    ],
+)
+def test_load_template_profile_rejects_invalid_feature_matcher(
+    tmp_path,
+    field: str,
+    value,
+    error_match: str,
+) -> None:
+    path, manifest = _manifest(tmp_path)
+    image = _feature_template(20260718)
+    manifest["templates"][0]["sha256"] = _write_image(
+        tmp_path / "templates" / "first.png",
+        image,
+    )
+    _enable_sift(manifest)
+    manifest["feature_matcher"][field] = value
+    _write_manifest(path, manifest)
+
+    with pytest.raises(ValueError, match=error_match):
+        load_template_profile(path)
+
+
+def test_feature_profile_rejects_duplicate_id_across_assigned_and_null_templates(
+    tmp_path,
+) -> None:
+    path, manifest = _manifest(tmp_path)
+    image = _feature_template(20260718)
+    manifest["templates"][0]["sha256"] = _write_image(
+        tmp_path / "templates" / "first.png",
+        image,
+    )
+    manifest["templates"][1]["id"] = manifest["templates"][0]["id"]
+    _enable_sift(manifest)
+    _write_manifest(path, manifest)
+
+    with pytest.raises(ValueError, match="不能重复"):
+        load_template_profile(path)
 
 
 def test_load_template_profile_rejects_hash_mismatch(tmp_path) -> None:
@@ -254,9 +366,7 @@ def test_load_template_profile_rejects_symlink_escape(tmp_path) -> None:
             "frame_manifest_sha256",
         ),
         (
-            lambda value: value["source_datasets"][0].update(
-                dataset_content_sha256="f" * 64
-            ),
+            lambda value: value["source_datasets"][0].update(dataset_content_sha256="f" * 64),
             "dataset_content_sha256",
         ),
         (lambda value: value["templates"][0].update(id=""), "templates\\[0\\].id"),

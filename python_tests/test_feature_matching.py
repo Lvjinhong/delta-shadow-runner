@@ -428,6 +428,27 @@ def test_feature_detector_copies_template_and_never_mutates_frame() -> None:
         first.accepted = False
 
 
+def test_identity_match_touching_roi_border_tolerates_only_numeric_epsilon() -> None:
+    template = _template()
+    detector = LocalFeatureAnchorDetector(
+        label="full-roi",
+        waypoint_id="A",
+        template=template,
+        search_roi=CaptureRegion(0, 0, template.shape[1], template.shape[0]),
+        backend=FeatureBackend.SIFT,
+        policy=_policy(
+            minimum_projected_area_ratio=0.5,
+            maximum_projected_area_ratio=1.0,
+            minimum_target_coverage=0.05,
+        ),
+        maximum_features=2000,
+    )
+
+    observation = detector.detect(template)
+
+    assert observation.reason is FeatureMatchReason.ACCEPTED
+
+
 @pytest.mark.parametrize(
     "image",
     [

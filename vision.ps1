@@ -21,6 +21,12 @@ param(
 
     [string]$ProfilePath,
 
+    [ValidateSet("ncc", "orb", "sift")]
+    [string]$FeatureBackend = "ncc",
+
+    [ValidateRange(32, 50000)]
+    [int]$MaximumFeatures = 3000,
+
     [ValidatePattern("^[A-Za-z0-9._-]+$")]
     [string]$RunId,
 
@@ -293,7 +299,8 @@ if ($Mode -eq "Calibrate") {
         throw "Calibrate 必须提供 -Dataset、-Labels 和 -ProfilePath（输出目录）。"
     }
     & $uv run python -m delta_vision.calibrate_templates `
-        --dataset $Dataset --labels $Labels --output $ProfilePath
+        --dataset $Dataset --labels $Labels --output $ProfilePath `
+        --feature-backend $FeatureBackend --maximum-features $MaximumFeatures
     exit $LASTEXITCODE
 }
 

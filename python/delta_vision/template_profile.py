@@ -13,7 +13,14 @@ import cv2
 import numpy as np
 
 from .config import CaptureRegion
+from .feature_matching import (
+    FeatureBackend,
+    FeatureMatchPolicy,
+    LocalFeatureAnchorDetector,
+)
+from .feature_navigation import FeatureRouteTemplate, FeatureWaypointObserver
 from .frames import DatasetContentDigest
+from .navigation import WaypointObservationSource
 from .template_matching import (
     MatchDecisionPolicy,
     RouteTemplate,
@@ -24,7 +31,7 @@ from .template_matching import (
 
 @dataclass(frozen=True, slots=True)
 class TemplateProfile:
-    observer: TemplateWaypointObserver
+    observer: WaypointObservationSource
     frame_size: tuple[int, int]
     manifest_sha256: str
     source_run_ids: frozenset[str]
@@ -49,6 +56,44 @@ def _finite_number(value: object, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f'模板清单字段 "{field}" 必须是有限数')
     return float(value)
+
+
+def _feature_matcher(
+    value: object,
+) -> tuple[FeatureBackend, FeatureMatchPolicy, int] | None:
+    if value is None:
+        return None
+    raw = _mapping(value, field="feature_matcher")
+    try:
+        backend = FeatureBackend(raw.get("backend"))
+    except (TypeError, ValueError) as error:
+        raise ValueError('模板清单字段 "feature_matcher.backend" 必须是 orb 或 sift') from error
+    maximum_features = raw.get("maximum_features")
+    if type(maximum_features) is not int or not 32 <= maximum_features <= 50_000:
+        raise ValueError(
+            '模板清单字段 "feature_matcher.maximum_features" 必须是 32 到 50000 的整数'
+        )
+    policy = FeatureMatchPolicy(
+        ratio_threshold=raw.get("ratio_threshold"),
+        ransac_reprojection_threshold_px=raw.get("ransac_reprojection_threshold_px"),
+        minimum_good_matches=raw.get("minimum_good_matches"),
+        minimum_inliers=raw.get("minimum_inliers"),
+        minimum_inlier_ratio=raw.get("minimum_inlier_ratio"),
+        maximum_reprojection_rmse_px=raw.get("maximum_reprojection_rmse_px"),
+        maximum_reprojection_p95_px=raw.get("maximum_reprojection_p95_px"),
+        minimum_source_coverage=raw.get("minimum_source_coverage"),
+        minimum_target_coverage=raw.get("minimum_target_coverage"),
+        minimum_projected_area_ratio=raw.get("minimum_projected_area_ratio"),
+        maximum_projected_area_ratio=raw.get("maximum_projected_area_ratio"),
+        maximum_homography_condition_number=raw.get("maximum_homography_condition_number"),
+        secondary_minimum_inliers=raw.get("secondary_minimum_inliers"),
+        minimum_projected_edge_px=raw.get("minimum_projected_edge_px", 8.0),
+        secondary_maximum_corner_outside_roi_px=raw.get(
+            "secondary_maximum_corner_outside_roi_px",
+            24.0,
+        ),
+    )
+    return backend, policy, maximum_features
 
 
 def _sha256(value: object, *, field: str) -> str:
@@ -154,6 +199,7 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
         field="matcher.minimum_template_margin",
     )
     nms_radius_px = _positive_int(matcher.get("nms_radius_px"), field="matcher.nms_radius_px")
+    feature_settings = _feature_matcher(raw.get("feature_matcher"))
 
     raw_source_datasets = raw.get("source_datasets")
     if not isinstance(raw_source_datasets, list) or not raw_source_datasets:
@@ -196,9 +242,7 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
             content_digest.update_hash(sequence, parsed_sha256)
             parsed_frame_hashes_by_sequence[sequence] = parsed_sha256
         if parsed_frame_hashes != list(parsed_frame_hashes_by_sequence.values()):
-            raise ValueError(
-                f'模板清单字段 "{field}.frame_sha256s" 必须与 frame_hashes 顺序一致'
-            )
+            raise ValueError(f'模板清单字段 "{field}.frame_sha256s" 必须与 frame_hashes 顺序一致')
         perception_hashes = item.get("perception_sha256s")
         if not isinstance(perception_hashes, list) or not perception_hashes:
             raise ValueError(f'模板清单字段 "{field}.perception_sha256s" 必须是非空数组')
@@ -227,6 +271,8 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
     if not isinstance(raw_templates, list) or not raw_templates:
         raise ValueError('模板清单字段 "templates" 必须是非空数组')
     route_templates: list[RouteTemplate] = []
+    feature_route_templates: list[FeatureRouteTemplate] = []
+    seen_template_ids: set[str] = set()
     root = manifest_path.parent
     for index, raw_template in enumerate(raw_templates):
         field = f"templates[{index}]"
@@ -234,6 +280,9 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
         template_id = item.get("id")
         if not isinstance(template_id, str) or not template_id:
             raise ValueError(f'模板清单字段 "{field}.id" 必须是非空字符串')
+        if template_id in seen_template_ids:
+            raise ValueError("路线模板 ID 不能重复")
+        seen_template_ids.add(template_id)
         roi_id = item.get("roi_id")
         if not isinstance(roi_id, str) or roi_id not in rois:
             raise ValueError(f'模板清单字段 "{field}.roi_id" 必须引用已定义 ROI')
@@ -292,28 +341,52 @@ def load_template_profile(path: str | Path) -> TemplateProfile:
                 f'模板 "{template_id}" 没有可用缩放比例：'
                 f'缩放后必须至少为 2×2 且不能大于 ROI "{roi_id}"'
             )
-        detector = TemplateAnchorDetector(
-            label=template_id,
-            template=image,
-            search_roi=rois[roi_id],
-            scales=scales,
-            policy=spatial_policy,
-            nms_radius_px=nms_radius_px,
-        )
-        route_templates.append(
-            RouteTemplate(
-                template_id=template_id,
-                detector=detector,
-                route_position=parsed_position,
-                waypoint_id=waypoint_id,
+        if feature_settings is None:
+            detector = TemplateAnchorDetector(
+                label=template_id,
+                template=image,
+                search_roi=rois[roi_id],
+                scales=scales,
+                policy=spatial_policy,
+                nms_radius_px=nms_radius_px,
             )
-        )
+            route_templates.append(
+                RouteTemplate(
+                    template_id=template_id,
+                    detector=detector,
+                    route_position=parsed_position,
+                    waypoint_id=waypoint_id,
+                )
+            )
+        elif waypoint_id is not None:
+            backend, feature_policy, maximum_features = feature_settings
+            feature_route_templates.append(
+                FeatureRouteTemplate(
+                    detector=LocalFeatureAnchorDetector(
+                        label=template_id,
+                        waypoint_id=waypoint_id,
+                        template=image,
+                        search_roi=rois[roi_id],
+                        backend=backend,
+                        policy=feature_policy,
+                        maximum_features=maximum_features,
+                    ),
+                    route_position=parsed_position,
+                )
+            )
 
-    observer = TemplateWaypointObserver(
-        templates=tuple(route_templates),
-        expected_frame_size=frame_size,
-        minimum_template_margin=template_margin,
-    )
+    observer: WaypointObservationSource
+    if feature_settings is None:
+        observer = TemplateWaypointObserver(
+            templates=tuple(route_templates),
+            expected_frame_size=frame_size,
+            minimum_template_margin=template_margin,
+        )
+    else:
+        observer = FeatureWaypointObserver(
+            templates=tuple(feature_route_templates),
+            expected_frame_size=frame_size,
+        )
     return TemplateProfile(
         observer=observer,
         frame_size=frame_size,

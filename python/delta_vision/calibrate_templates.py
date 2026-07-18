@@ -17,6 +17,11 @@ import cv2
 import numpy as np
 
 from .config import CaptureRegion
+from .feature_matching import (
+    FeatureBackend,
+    FeatureMatchPolicy,
+    LocalFeatureAnchorDetector,
+)
 from .frames import DatasetContentDigest, ReplayFrameSource, frame_content_sha256
 
 
@@ -112,6 +117,69 @@ class MatcherConfiguration:
             minimum_template_margin=0.05,
             nms_radius_px=18,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureMatcherConfiguration:
+    backend: FeatureBackend
+    policy: FeatureMatchPolicy
+    maximum_features: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.backend, FeatureBackend):
+            raise ValueError("特征 backend 必须是 ORB 或 SIFT")
+        if not isinstance(self.policy, FeatureMatchPolicy):
+            raise ValueError("特征 policy 类型无效")
+        if type(self.maximum_features) is not int or not 32 <= self.maximum_features <= 50_000:
+            raise ValueError("maximum_features 必须是 32 到 50000 的整数")
+
+    @classmethod
+    def default(cls, backend: FeatureBackend) -> FeatureMatcherConfiguration:
+        if not isinstance(backend, FeatureBackend):
+            raise ValueError("特征 backend 必须是 ORB 或 SIFT")
+        return cls(
+            backend=backend,
+            policy=FeatureMatchPolicy(
+                ratio_threshold=0.8 if backend is FeatureBackend.ORB else 0.75,
+                ransac_reprojection_threshold_px=3.0,
+                minimum_good_matches=12,
+                minimum_inliers=10,
+                minimum_inlier_ratio=0.55,
+                maximum_reprojection_rmse_px=4.0,
+                maximum_reprojection_p95_px=6.0,
+                minimum_source_coverage=0.05,
+                minimum_target_coverage=0.02,
+                minimum_projected_area_ratio=0.01,
+                maximum_projected_area_ratio=1.0,
+                maximum_homography_condition_number=100_000_000.0,
+                secondary_minimum_inliers=8,
+            ),
+            maximum_features=3000,
+        )
+
+    def to_manifest(self) -> dict[str, object]:
+        policy = self.policy
+        return {
+            "backend": str(self.backend),
+            "maximum_features": self.maximum_features,
+            "ratio_threshold": policy.ratio_threshold,
+            "ransac_reprojection_threshold_px": policy.ransac_reprojection_threshold_px,
+            "minimum_good_matches": policy.minimum_good_matches,
+            "minimum_inliers": policy.minimum_inliers,
+            "minimum_inlier_ratio": policy.minimum_inlier_ratio,
+            "maximum_reprojection_rmse_px": policy.maximum_reprojection_rmse_px,
+            "maximum_reprojection_p95_px": policy.maximum_reprojection_p95_px,
+            "minimum_source_coverage": policy.minimum_source_coverage,
+            "minimum_target_coverage": policy.minimum_target_coverage,
+            "minimum_projected_area_ratio": policy.minimum_projected_area_ratio,
+            "maximum_projected_area_ratio": policy.maximum_projected_area_ratio,
+            "maximum_homography_condition_number": (policy.maximum_homography_condition_number),
+            "secondary_minimum_inliers": policy.secondary_minimum_inliers,
+            "minimum_projected_edge_px": policy.minimum_projected_edge_px,
+            "secondary_maximum_corner_outside_roi_px": (
+                policy.secondary_maximum_corner_outside_roi_px
+            ),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +399,7 @@ def calibrate_templates(
     labels_path: str | Path,
     output_directory: str | Path,
     matcher: MatcherConfiguration,
+    feature_matcher: FeatureMatcherConfiguration | None = None,
 ) -> CalibrationResult:
     dataset_root = Path(dataset_directory)
     output_root = Path(output_directory)
@@ -353,6 +422,36 @@ def calibrate_templates(
         labels=labels,
         regions=regions,
     )
+    if feature_matcher is not None:
+        assigned_template_count = 0
+        positions_by_waypoint: dict[str, tuple[float, float]] = {}
+        for label, image_bytes, _source_frame_sha256 in scan.encoded_templates:
+            if label.waypoint_id is None:
+                continue
+            existing_position = positions_by_waypoint.setdefault(
+                label.waypoint_id,
+                label.route_position,
+            )
+            if existing_position != label.route_position:
+                raise ValueError("同一 waypoint 的特征路线坐标必须一致")
+            image = cv2.imdecode(
+                np.frombuffer(image_bytes, dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
+            if image is None:
+                raise ValueError(f'模板 "{label.template_id}" 无法解码')
+            LocalFeatureAnchorDetector(
+                label=label.template_id,
+                waypoint_id=label.waypoint_id,
+                template=image,
+                search_roi=regions[label.roi_id],
+                backend=feature_matcher.backend,
+                policy=feature_matcher.policy,
+                maximum_features=feature_matcher.maximum_features,
+            )
+            assigned_template_count += 1
+        if assigned_template_count == 0:
+            raise ValueError("特征 Profile 至少需要一个有 waypoint_id 的模板")
 
     templates_root = output_root / "templates"
     templates_root.mkdir(parents=True, exist_ok=True)
@@ -413,6 +512,8 @@ def calibrate_templates(
         ],
         "templates": manifest_templates,
     }
+    if feature_matcher is not None:
+        manifest["feature_matcher"] = feature_matcher.to_manifest()
     manifest_path = output_root / "templates.json"
     temporary_manifest = output_root / ".templates.json.tmp"
     temporary_manifest.write_text(
@@ -433,13 +534,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--feature-backend",
+        choices=("ncc", "orb", "sift"),
+        default="ncc",
+    )
+    parser.add_argument("--maximum-features", type=int, default=3000)
     args = parser.parse_args(argv)
     try:
+        feature_matcher = None
+        if args.feature_backend != "ncc":
+            default_feature_matcher = FeatureMatcherConfiguration.default(
+                FeatureBackend(args.feature_backend)
+            )
+            feature_matcher = FeatureMatcherConfiguration(
+                backend=default_feature_matcher.backend,
+                policy=default_feature_matcher.policy,
+                maximum_features=args.maximum_features,
+            )
         result = calibrate_templates(
             dataset_directory=args.dataset,
             labels_path=args.labels,
             output_directory=args.output,
             matcher=MatcherConfiguration.default(),
+            feature_matcher=feature_matcher,
         )
     except Exception as error:
         print(f"模板标定失败: {error}", file=sys.stderr)
@@ -451,6 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "template_count": result.template_count,
                 "frame_size": result.frame_size,
                 "manifest_path": str(result.manifest_path),
+                "feature_backend": args.feature_backend,
             },
             ensure_ascii=False,
         )
