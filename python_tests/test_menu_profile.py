@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -403,7 +404,8 @@ def test_materialize_menu_profile_never_replaces_concurrent_output_directory(
 
     assert output.is_dir()
     assert output.stat().st_ino == reserved_inode
-    assert output.stat().st_mode & 0o777 == 0o700
+    if os.name != "nt":
+        assert output.stat().st_mode & 0o777 == 0o700
     assert not archive.exists()
     assert not list(tmp_path.glob(".*portable-menu*"))
 

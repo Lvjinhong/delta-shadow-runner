@@ -320,7 +320,9 @@ def test_second_model_allows_bounded_quad_drift_only_for_ambiguity() -> None:
     template = _template()
     roi = CaptureRegion(0, 40, 720, 400)
     first = np.float32([[65, 43], [324, 46], [322, 205], [60, 201]])
-    second = np.float32([[421, 164], [626, 162], [626, 380], [417, 382]])
+    second = np.float32(
+        [[415.92, 158.6], [631.18, 156.5], [631.18, 385.4], [411.72, 387.5]]
+    )
     detector = _detector(FeatureBackend.ORB, template=template, roi=roi)
 
     first_only = detector.detect(_scene(template, roi=roi, quads=(first,)))
@@ -368,7 +370,9 @@ def test_secondary_residual_source_coverage_cannot_hide_duplicate() -> None:
     template = _template()
     roi = CaptureRegion(0, 40, 720, 400)
     first = np.float32([[83, 86], [319, 89], [317, 317], [78, 313]])
-    second = np.float32([[397, 102], [595, 100], [595, 312], [393, 314]])
+    second = np.float32(
+        [[382.3, 86.25], [610, 83.95], [610, 327.75], [377.7, 330.05]]
+    )
     detector = _detector(FeatureBackend.ORB, template=template, roi=roi)
 
     first_only = detector.detect(_scene(template, roi=roi, quads=(first,)))
@@ -382,9 +386,14 @@ def test_secondary_residual_source_coverage_cannot_hide_duplicate() -> None:
 
 
 def test_masked_second_pass_recovers_independently_valid_duplicate() -> None:
+    # 该用例依赖 RANSAC 的具体 inlier 拆分，显式固定 OpenCV 全局随机种子。
+    cv2.setRNGSeed(0)
     template = _template()
     roi = CaptureRegion(0, 40, 720, 400)
     first = np.float32([[78, 6], [266, 9], [264, 239], [73, 235]])
+    first_center = np.mean(first, axis=0)
+    first = (first - first_center) * 1.2 + first_center
+    first[:, 1] += 2 - first[:, 1].min()
     second = np.float32([[498, 160], [713, 158], [713, 352], [494, 354]])
     detector = _detector(FeatureBackend.ORB, template=template, roi=roi)
 
