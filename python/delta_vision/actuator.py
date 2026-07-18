@@ -10,6 +10,10 @@ class ExpiredDryRunActionError(RuntimeError):
     """dry-run 视觉动作意图在记录前已经过期。"""
 
 
+class DryRunInputStateError(RuntimeError):
+    """dry-run 动作会破坏已有输入状态。"""
+
+
 @dataclass(frozen=True, slots=True)
 class ActionEvent:
     kind: Literal[
@@ -63,6 +67,16 @@ class DryRunActuator:
         self._last_event_at_ns = effective_now_ns
         return effective_now_ns
 
+    def _validate_fresh_action(self, *, now_ns: int, expires_at_ns: int) -> int:
+        if type(now_ns) is not int or now_ns < 0:
+            raise ValueError("动作时间戳必须是非负整数")
+        if type(expires_at_ns) is not int or expires_at_ns <= 0:
+            raise ValueError("动作过期时间必须是正整数")
+        effective_now_ns = max(now_ns, self._last_event_at_ns)
+        if effective_now_ns >= expires_at_ns:
+            raise ExpiredDryRunActionError("dry-run 视觉输入动作已经过期")
+        return effective_now_ns
+
     def key_down(self, key: str, *, now_ns: int) -> None:
         self._require_allowed(key)
         if key in self._pressed_at:
@@ -106,14 +120,10 @@ class DryRunActuator:
     ) -> None:
         if type(screen_x) is not int or type(screen_y) is not int:
             raise ValueError("点击屏幕坐标必须是整数")
-        if type(now_ns) is not int or now_ns < 0:
-            raise ValueError("点击时间戳必须是非负整数")
-        if type(expires_at_ns) is not int or expires_at_ns <= 0:
-            raise ValueError("点击过期时间必须是正整数")
-        effective_now_ns = max(now_ns, self._last_event_at_ns)
-        if effective_now_ns >= expires_at_ns:
-            raise ExpiredDryRunActionError("dry-run 视觉点击动作已经过期")
-
+        effective_now_ns = self._validate_fresh_action(
+            now_ns=now_ns,
+            expires_at_ns=expires_at_ns,
+        )
         effective_now_ns = self._next_event_time(effective_now_ns)
         self._events.extend(
             (
@@ -140,6 +150,23 @@ class DryRunActuator:
                 ),
             )
         )
+
+    def tap_key(
+        self,
+        key: str,
+        *,
+        now_ns: int,
+        expires_at_ns: int,
+    ) -> None:
+        self._require_allowed(key)
+        effective_now_ns = self._validate_fresh_action(
+            now_ns=now_ns,
+            expires_at_ns=expires_at_ns,
+        )
+        if key in self._pressed_at:
+            raise DryRunInputStateError(f'按键 "{key}" 尚未释放')
+        self.key_down(key, now_ns=effective_now_ns)
+        self.key_up(key, now_ns=effective_now_ns, reason="按键点击完成")
 
     def release_all(self, *, now_ns: int, reason: str) -> None:
         # 修饰键和移动键按按下顺序逆序释放，避免组合键残留。

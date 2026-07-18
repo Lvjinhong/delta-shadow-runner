@@ -1,6 +1,10 @@
 import pytest
 
-from delta_vision.actuator import DryRunActuator, ExpiredDryRunActionError
+from delta_vision.actuator import (
+    DryRunActuator,
+    DryRunInputStateError,
+    ExpiredDryRunActionError,
+)
 
 
 def test_dry_run_actuator_tracks_pressed_keys_and_releases_all() -> None:
@@ -77,6 +81,42 @@ def test_dry_run_absolute_click_rejects_intent_older_than_audit_clock() -> None:
         actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
 
     assert actuator.events == events_before_click
+
+
+def test_dry_run_key_tap_records_down_and_up_without_leaving_pressed_key() -> None:
+    actuator = DryRunActuator(allowed_keys={"space"}, max_key_hold_ms=250)
+
+    actuator.tap_key("space", now_ns=100, expires_at_ns=200)
+
+    assert [(event.kind, event.key) for event in actuator.events] == [
+        ("key_down", "space"),
+        ("key_up", "space"),
+    ]
+    assert actuator.events[-1].reason == "按键点击完成"
+    assert actuator.pressed_keys == frozenset()
+
+
+def test_dry_run_key_tap_rejects_stale_intent_against_audit_clock() -> None:
+    actuator = DryRunActuator(allowed_keys={"w", "space"}, max_key_hold_ms=250)
+    actuator.key_down("w", now_ns=300)
+    events_before_tap = actuator.events
+
+    with pytest.raises(ExpiredDryRunActionError, match="过期"):
+        actuator.tap_key("space", now_ns=100, expires_at_ns=200)
+
+    assert actuator.events == events_before_tap
+
+
+def test_dry_run_key_tap_never_releases_preexisting_key_hold() -> None:
+    actuator = DryRunActuator(allowed_keys={"space"}, max_key_hold_ms=250)
+    actuator.key_down("space", now_ns=50)
+    events_before_tap = actuator.events
+
+    with pytest.raises(DryRunInputStateError, match="尚未释放"):
+        actuator.tap_key("space", now_ns=100, expires_at_ns=200)
+
+    assert actuator.events == events_before_tap
+    assert actuator.pressed_keys == frozenset({"space"})
 
 
 @pytest.mark.parametrize(
