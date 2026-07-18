@@ -130,3 +130,12 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 本机全量验证：698 项测试通过，总覆盖率 86.06%；Ruff、sdist/wheel build 与 `git diff --check` 通过。
 - 2026-07-19 只读实测确认游戏客户区已改为 1920×1080 窗口模式；2 秒 MSS 采样 4/4 帧、无缺帧。旧 2560×1440 菜单包和全部模板/ROI/坐标从此视为过期，不能缩放复用。
 - 当前 1080p 画面停在视频设置页；尚未在 1080p 基线上发送菜单输入，也尚未采集主页、仓库、保险箱、赛后和 HUD 的完整 Profile，相关真实循环与路线准确率继续视为未完成。
+
+[2026-07-19 真实零成本首轮与外部循环编排]
+- 只读复核确认游戏客户区稳定为 1920×1080，采集了干净主页数据集 `homepage-windowed-1080p-home-clean-20260719-01`；旧 2560×1440 Profile 继续禁止复用。
+- 经独立 live 输入审查后，仅执行一次受保护的主页“出发”点击；审计通过且只产生 3 个鼠标事件，完成匹配、选干员、加载、零号大坝出生、倒地/死亡、赛季通行证页并自动返回主页。该轮没有局内移动，不能计为跑图成功样本。
+- 新增 `passive_scene.py`：赛后阶段不持有任何输入接口，只读观察 `IN_MATCH/DEATH_SUMMARY/POST_MATCH`，连续确认 3 帧 `BASE` 才成功；未知、歧义、过期、乱序、分辨率变化、客户区移动/缩放、抓帧期间失焦都 fail-closed。
+- 新增 `external_loop.py`：严格串行执行 `BASE 单击进图 → 局内 runner → 被动回厅 → 可选 cleanup`；上一轮未确认 `BASE_CONFIRMED + terminal_scene=BASE` 时绝不清理或开始下一轮。entry/match 强制同一窗口标题、同一 F12 急停键和同一 1920×1080 Profile。
+- cleanup 证据区分 `cleanup_started` 与 `cleanup_completed`；抓帧和截图源关闭同时失败时保留原始安全错误并附加关闭错误，不让次要异常遮蔽根因。
+- 本机 Python 3.12.12 全量验证：720 项测试通过，总覆盖率 85.81%；本次改动 Ruff、sdist/wheel build 与 `git diff --check` 通过；独立 code-reviewer 最终无 finding，结论 APPROVE。
+- 仍未完成：1080p 正式菜单 Profile bundle、仓库/保险箱清理 hook、局内 HUD/出生点 blind 数据、零号大坝固定路线和真实完整跑刀成功率。
