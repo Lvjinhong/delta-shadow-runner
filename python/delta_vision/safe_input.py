@@ -134,6 +134,7 @@ class Win32InputActuator:
         self._gateway = gateway
         self._clock_ns = clock_ns
         self._timer_factory = timer_factory
+        self._input_lock = threading.RLock()
         self._state_lock = threading.RLock()
         self._key_locks = {key: threading.RLock() for key in self._scan_codes}
         self._mouse_lock = threading.RLock()
@@ -275,20 +276,53 @@ class Win32InputActuator:
                 self._store_watchdog_error(retry_error)
 
     def key_down(self, key: str, *, now_ns: int) -> None:
+        with self._input_lock:
+            self._key_down(
+                key,
+                now_ns=now_ns,
+                expires_at_ns=None,
+                reject_if_pressed=False,
+            )
+
+    def _key_down(
+        self,
+        key: str,
+        *,
+        now_ns: int,
+        expires_at_ns: int | None,
+        reject_if_pressed: bool,
+    ) -> None:
         scan_code = self._scan_code(key)
         self._check_new_action(now_ns=now_ns)
         with self._key_locks[key]:
             with self._state_lock:
                 if key in self._pressed_at:
+                    if reject_if_pressed:
+                        raise InputInjectionError(f'按键 "{key}" 尚未释放')
                     return
             token = object()
             timer = self._timer_factory(
                 self._max_key_hold_seconds,
                 lambda: self._watchdog_release(key, token),
             )
+            effective_now_ns = now_ns
+            if expires_at_ns is not None:
+                # Timer 构造和 gate 都可能阻塞，因此在真正 SendInput 前再次
+                # 读取单调时钟，并在最后一次 gate 后做最终过期复核。
+                effective_now_ns = self._clock_ns()
+                self._validate_action_timing(
+                    now_ns=effective_now_ns,
+                    expires_at_ns=expires_at_ns,
+                )
+                self._check_new_action(now_ns=effective_now_ns)
+                effective_now_ns = self._clock_ns()
+                self._validate_action_timing(
+                    now_ns=effective_now_ns,
+                    expires_at_ns=expires_at_ns,
+                )
             self._require_inserted(self._gateway.send_key(scan_code, key_up=False))
             with self._state_lock:
-                effective_now_ns = self._next_event_time_locked(now_ns)
+                effective_now_ns = self._next_event_time_locked(effective_now_ns)
                 self._pressed_at[key] = (effective_now_ns, token)
                 self._watchdog_timers[key] = (token, timer)
                 self._events.append(InputEvent("key_down", effective_now_ns, key=key))
@@ -353,14 +387,15 @@ class Win32InputActuator:
         if type(now_ns) is not int or now_ns < 0:
             raise ValueError("动作时间戳必须是非负整数")
         # 相对移动与绝对点击共用同一把锁，避免改变尚未按下的点击坐标。
-        with self._mouse_lock:
-            self._check_new_action(now_ns=now_ns)
-            self._require_inserted(self._gateway.send_mouse_relative(dx, dy))
-            with self._state_lock:
-                effective_now_ns = self._next_event_time_locked(now_ns)
-                self._events.append(
-                    InputEvent("mouse_move", effective_now_ns, dx=dx, dy=dy)
-                )
+        with self._input_lock:
+            with self._mouse_lock:
+                self._check_new_action(now_ns=now_ns)
+                self._require_inserted(self._gateway.send_mouse_relative(dx, dy))
+                with self._state_lock:
+                    effective_now_ns = self._next_event_time_locked(now_ns)
+                    self._events.append(
+                        InputEvent("mouse_move", effective_now_ns, dx=dx, dy=dy)
+                    )
 
     def _release_mouse_left(
         self,
@@ -402,13 +437,55 @@ class Win32InputActuator:
             return True
 
     @staticmethod
-    def _validate_click_timing(*, now_ns: int, expires_at_ns: int) -> None:
+    def _validate_action_timing(*, now_ns: int, expires_at_ns: int) -> None:
         if type(now_ns) is not int or now_ns < 0:
-            raise ValueError("点击时间戳必须是非负整数")
+            raise ValueError("动作时间戳必须是非负整数")
         if type(expires_at_ns) is not int or expires_at_ns <= 0:
-            raise ValueError("点击过期时间必须是正整数")
+            raise ValueError("动作过期时间必须是正整数")
         if now_ns >= expires_at_ns:
-            raise ExpiredInputActionError("视觉点击动作已经过期")
+            raise ExpiredInputActionError("视觉输入动作已经过期")
+
+    def tap_key(
+        self,
+        key: str,
+        *,
+        now_ns: int,
+        expires_at_ns: int,
+    ) -> None:
+        self._scan_code(key)
+        self._validate_action_timing(now_ns=now_ns, expires_at_ns=expires_at_ns)
+        with self._input_lock:
+            with self._key_locks[key]:
+                dispatch_now_ns = self._clock_ns()
+                self._validate_action_timing(
+                    now_ns=dispatch_now_ns,
+                    expires_at_ns=expires_at_ns,
+                )
+                self._key_down(
+                    key,
+                    now_ns=dispatch_now_ns,
+                    expires_at_ns=expires_at_ns,
+                    reject_if_pressed=True,
+                )
+                first_release_error: InputInjectionError | None = None
+                try:
+                    self.key_up(
+                        key,
+                        now_ns=self._clock_ns(),
+                        reason="按键点击完成",
+                    )
+                except InputInjectionError as error:
+                    first_release_error = error
+                    try:
+                        self.key_up(
+                            key,
+                            now_ns=self._clock_ns(),
+                            reason="按键点击释放重试",
+                        )
+                    except InputInjectionError:
+                        pass
+                if first_release_error is not None:
+                    raise first_release_error
 
     def click_left_at(
         self,
@@ -420,106 +497,108 @@ class Win32InputActuator:
     ) -> None:
         if type(screen_x) is not int or type(screen_y) is not int:
             raise ValueError("点击屏幕坐标必须是整数")
-        self._validate_click_timing(now_ns=now_ns, expires_at_ns=expires_at_ns)
+        self._validate_action_timing(now_ns=now_ns, expires_at_ns=expires_at_ns)
         # 绝对移动与按下/释放必须是一笔不可交错的事务。否则并发点击会在
         # 其他坐标按下，或在上一轮左键卡住时把移动变成拖拽。
-        with self._mouse_lock:
-            transaction_now_ns = self._clock_ns()
-            self._validate_click_timing(
-                now_ns=transaction_now_ns,
-                expires_at_ns=expires_at_ns,
-            )
-            self._check_new_action(now_ns=transaction_now_ns)
-            with self._state_lock:
-                if self._mouse_left_state is not None:
-                    raise InputInjectionError("上一次鼠标左键尚未释放")
-
-            self._require_inserted(
-                self._gateway.send_mouse_absolute(screen_x, screen_y)
-            )
-            with self._state_lock:
-                effective_now_ns = self._next_event_time_locked(transaction_now_ns)
-                self._events.append(
-                    InputEvent(
-                        "mouse_move_absolute",
-                        effective_now_ns,
-                        x=screen_x,
-                        y=screen_y,
-                    )
+        with self._input_lock:
+            with self._mouse_lock:
+                transaction_now_ns = self._clock_ns()
+                self._validate_action_timing(
+                    now_ns=transaction_now_ns,
+                    expires_at_ns=expires_at_ns,
                 )
+                self._check_new_action(now_ns=transaction_now_ns)
+                with self._state_lock:
+                    if self._mouse_left_state is not None:
+                        raise InputInjectionError("上一次鼠标左键尚未释放")
 
-            dispatch_now_ns = self._clock_ns()
-            self._validate_click_timing(
-                now_ns=dispatch_now_ns,
-                expires_at_ns=expires_at_ns,
-            )
-            self._check_new_action(now_ns=dispatch_now_ns)
-            with self._state_lock:
-                if self._mouse_left_state is not None:
-                    raise InputInjectionError("上一次鼠标左键尚未释放")
-            token = object()
-            self._require_inserted(self._gateway.send_mouse_left(key_up=False))
-            with self._state_lock:
-                effective_down_ns = self._next_event_time_locked(dispatch_now_ns)
-                self._mouse_left_state = (effective_down_ns, token)
-                self._events.append(InputEvent("mouse_left_down", effective_down_ns))
-            try:
-                self._schedule_mouse_watchdog(token)
-            except InputInjectionError as watchdog_error:
+                self._require_inserted(
+                    self._gateway.send_mouse_absolute(screen_x, screen_y)
+                )
+                with self._state_lock:
+                    effective_now_ns = self._next_event_time_locked(transaction_now_ns)
+                    self._events.append(
+                        InputEvent(
+                            "mouse_move_absolute",
+                            effective_now_ns,
+                            x=screen_x,
+                            y=screen_y,
+                        )
+                    )
+
+                dispatch_now_ns = self._clock_ns()
+                self._validate_action_timing(
+                    now_ns=dispatch_now_ns,
+                    expires_at_ns=expires_at_ns,
+                )
+                self._check_new_action(now_ns=dispatch_now_ns)
+                with self._state_lock:
+                    if self._mouse_left_state is not None:
+                        raise InputInjectionError("上一次鼠标左键尚未释放")
+                token = object()
+                self._require_inserted(self._gateway.send_mouse_left(key_up=False))
+                with self._state_lock:
+                    effective_down_ns = self._next_event_time_locked(dispatch_now_ns)
+                    self._mouse_left_state = (effective_down_ns, token)
+                    self._events.append(InputEvent("mouse_left_down", effective_down_ns))
+                try:
+                    self._schedule_mouse_watchdog(token)
+                except InputInjectionError as watchdog_error:
+                    try:
+                        self._release_mouse_left(
+                            now_ns=self._clock_ns(),
+                            reason="看门狗启动失败，立即释放鼠标左键",
+                            expected_token=token,
+                        )
+                    except InputInjectionError as release_error:
+                        raise InputInjectionError(
+                            "无法启动鼠标左键释放看门狗，且立即释放也失败"
+                        ) from release_error
+                    raise watchdog_error
+
+                first_release_error: InputInjectionError | None = None
                 try:
                     self._release_mouse_left(
                         now_ns=self._clock_ns(),
-                        reason="看门狗启动失败，立即释放鼠标左键",
+                        reason="点击完成",
                         expected_token=token,
                     )
-                except InputInjectionError as release_error:
-                    raise InputInjectionError(
-                        "无法启动鼠标左键释放看门狗，且立即释放也失败"
-                    ) from release_error
-                raise watchdog_error
-
-            first_release_error: InputInjectionError | None = None
-            try:
-                self._release_mouse_left(
-                    now_ns=self._clock_ns(),
-                    reason="点击完成",
-                    expected_token=token,
-                )
-            except InputInjectionError as error:
-                first_release_error = error
-                try:
-                    self._release_mouse_left(
-                        now_ns=self._clock_ns(),
-                        reason="鼠标左键释放重试",
-                        expected_token=token,
-                    )
-                except InputInjectionError:
-                    pass
-            if first_release_error is not None:
-                raise first_release_error
+                except InputInjectionError as error:
+                    first_release_error = error
+                    try:
+                        self._release_mouse_left(
+                            now_ns=self._clock_ns(),
+                            reason="鼠标左键释放重试",
+                            expected_token=token,
+                        )
+                    except InputInjectionError:
+                        pass
+                if first_release_error is not None:
+                    raise first_release_error
 
     def release_all(self, *, now_ns: int, reason: str) -> None:
-        with self._state_lock:
-            pressed = tuple(
-                (key, state[1]) for key, state in reversed(self._pressed_at.items())
-            )
-        first_error: InputInjectionError | None = None
-        for key, token in pressed:
-            try:
-                self._release_key(
-                    key,
-                    now_ns=now_ns,
-                    reason=reason,
-                    expected_token=token,
+        with self._input_lock:
+            with self._state_lock:
+                pressed = tuple(
+                    (key, state[1]) for key, state in reversed(self._pressed_at.items())
                 )
+            first_error: InputInjectionError | None = None
+            for key, token in pressed:
+                try:
+                    self._release_key(
+                        key,
+                        now_ns=now_ns,
+                        reason=reason,
+                        expected_token=token,
+                    )
+                except InputInjectionError as error:
+                    first_error = first_error or error
+            try:
+                self._release_mouse_left(now_ns=now_ns, reason=reason)
             except InputInjectionError as error:
                 first_error = first_error or error
-        try:
-            self._release_mouse_left(now_ns=now_ns, reason=reason)
-        except InputInjectionError as error:
-            first_error = first_error or error
-        if first_error is not None:
-            raise first_error
+            if first_error is not None:
+                raise first_error
 
     def expire_overdue(self, *, now_ns: int) -> tuple[str, ...]:
         with self._state_lock:

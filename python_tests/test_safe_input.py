@@ -113,6 +113,169 @@ def test_win32_actuator_sends_scan_code_and_tracks_pressed_key() -> None:
     assert actuator.events[-1].reason == "到达节点"
 
 
+def test_win32_actuator_taps_key_with_fresh_intent_and_releases() -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    actuator.tap_key("w", now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == [("key", 0x11, False), ("key", 0x11, True)]
+    assert actuator.pressed_keys == frozenset()
+    assert [event.kind for event in actuator.events] == ["key_down", "key_up"]
+    assert actuator.events[-1].reason == "按键点击完成"
+
+
+def test_win32_actuator_rejects_expired_key_tap_without_input() -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 201)
+
+    with pytest.raises(ExpiredInputActionError, match="过期"):
+        actuator.tap_key("w", now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == []
+
+
+def test_win32_actuator_rechecks_key_tap_expiry_after_waiting_for_key_lock() -> None:
+    gateway = FakeGateway()
+    clock_now = [150]
+    actuator = _actuator(gateway, clock_ns=lambda: clock_now[0])
+    started = threading.Event()
+    errors: list[BaseException] = []
+
+    def tap_after_lock() -> None:
+        started.set()
+        try:
+            actuator.tap_key("w", now_ns=100, expires_at_ns=200)
+        except BaseException as error:
+            errors.append(error)
+
+    with actuator._key_locks["w"]:
+        thread = threading.Thread(target=tap_after_lock)
+        thread.start()
+        assert started.wait(timeout=1)
+        clock_now[0] = 201
+
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ExpiredInputActionError)
+    assert gateway.sent == []
+
+
+def test_win32_actuator_rechecks_key_tap_expiry_immediately_before_down() -> None:
+    clock_now = [150]
+
+    class SlowGateGateway(FakeGateway):
+        def foreground_title(self) -> str:
+            title = super().foreground_title()
+            clock_now[0] = 201
+            return title
+
+    gateway = SlowGateGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: clock_now[0])
+
+    with pytest.raises(ExpiredInputActionError, match="过期"):
+        actuator.tap_key("w", now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == []
+    assert actuator.pressed_keys == frozenset()
+
+
+def test_win32_actuator_rejects_key_tap_when_key_is_already_pressed() -> None:
+    gateway = FakeGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+    actuator.key_down("w", now_ns=50)
+    sent_before_tap = list(gateway.sent)
+
+    with pytest.raises(InputInjectionError, match="尚未释放"):
+        actuator.tap_key("w", now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == sent_before_tap
+    assert actuator.pressed_keys == frozenset({"w"})
+    actuator.release_all(now_ns=160, reason="测试清理")
+
+
+def test_win32_actuator_key_tap_always_attempts_release_after_key_up_failure() -> None:
+    class FirstKeyUpFailingGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.key_up_attempts = 0
+
+        def send_key(self, scan_code: int, *, key_up: bool) -> int:
+            self.sent.append(("key", scan_code, key_up))
+            if key_up:
+                self.key_up_attempts += 1
+                return 0 if self.key_up_attempts == 1 else 1
+            return 1
+
+    gateway = FirstKeyUpFailingGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+
+    with pytest.raises(InputInjectionError):
+        actuator.tap_key("w", now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == [
+        ("key", 0x11, False),
+        ("key", 0x11, True),
+        ("key", 0x11, True),
+    ]
+    assert actuator.pressed_keys == frozenset()
+
+
+def test_concurrent_key_taps_do_not_deadlock_emergency_release_all() -> None:
+    class BarrierEmergencyGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.emergency_barrier = threading.Barrier(2)
+            self.w_gate_done = threading.Event()
+            self.allow_a_return = threading.Event()
+
+        def is_key_pressed(self, virtual_key: int) -> bool:
+            assert virtual_key == 0x7B
+            if not self.emergency_pressed:
+                return False
+            try:
+                self.emergency_barrier.wait(timeout=0.1)
+            except threading.BrokenBarrierError:
+                pass
+            if threading.current_thread().name == "tap-w":
+                self.w_gate_done.set()
+            else:
+                assert self.allow_a_return.wait(timeout=1)
+            return True
+
+    gateway = BarrierEmergencyGateway()
+    actuator = _actuator(gateway, clock_ns=lambda: 150)
+    actuator.key_down("w", now_ns=10)
+    actuator.key_down("a", now_ns=20)
+    gateway.emergency_pressed = True
+    errors: list[BaseException] = []
+
+    def tap(key: str) -> None:
+        try:
+            actuator.tap_key(key, now_ns=100, expires_at_ns=200)
+        except BaseException as error:
+            errors.append(error)
+
+    first = threading.Thread(target=tap, args=("w",), name="tap-w", daemon=True)
+    second = threading.Thread(target=tap, args=("a",), name="tap-a", daemon=True)
+    first.start()
+    second.start()
+    assert gateway.w_gate_done.wait(timeout=1)
+    # 让 tap-w 先进入 release_all 并阻塞在 tap-a 持有的 a 锁。
+    assert not threading.Event().wait(timeout=0.05)
+    gateway.allow_a_return.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(errors) == 2
+    assert all(isinstance(error, EmergencyStopError) for error in errors)
+    assert actuator.pressed_keys == frozenset()
+
+
 def test_win32_actuator_keeps_event_time_monotonic_after_watchdog_race() -> None:
     gateway = FakeGateway()
     actuator = _actuator(gateway)
