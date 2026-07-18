@@ -140,11 +140,7 @@ def _positive_number(value: object, *, field: str) -> float:
 
 
 def _finite_number(value: object, *, field: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f'配置字段 "{field}" 必须是有限数')
     return float(value)
 
@@ -234,9 +230,7 @@ def _parse_color_anchor(raw: Mapping[str, object]) -> ColorAnchorSettings:
     return ColorAnchorSettings(
         bgr=(raw_bgr[0], raw_bgr[1], raw_bgr[2]),
         tolerance=_byte_int(marker.get("tolerance"), field="marker.tolerance"),
-        minimum_area=_positive_int(
-            marker.get("minimum_area"), field="marker.minimum_area"
-        ),
+        minimum_area=_positive_int(marker.get("minimum_area"), field="marker.minimum_area"),
         confidence_threshold=confidence_threshold,
         localization_radius=_positive_number(
             raw.get("localization_radius"), field="localization_radius"
@@ -244,9 +238,7 @@ def _parse_color_anchor(raw: Mapping[str, object]) -> ColorAnchorSettings:
     )
 
 
-def _resolve_template_profile(
-    config_path: Path, raw: Mapping[str, object]
-) -> TemplateProfile:
+def _resolve_template_profile(config_path: Path, raw: Mapping[str, object]) -> TemplateProfile:
     perception = _mapping(raw.get("perception"), field="perception")
     if perception.get("mode") != "template":
         raise ValueError('schema_version=2 只支持 perception.mode="template"')
@@ -310,15 +302,25 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
             navigation.get("arrival_confirmations"),
             field="navigation.arrival_confirmations",
         ),
+        initial_waypoint_confirmations=_positive_int(
+            navigation.get("initial_waypoint_confirmations"),
+            field="navigation.initial_waypoint_confirmations",
+        ),
+        waypoint_advance_confirmations=_positive_int(
+            navigation.get("waypoint_advance_confirmations"),
+            field="navigation.waypoint_advance_confirmations",
+        ),
+        relocalization_confirmations=_positive_int(
+            navigation.get("relocalization_confirmations"),
+            field="navigation.relocalization_confirmations",
+        ),
     )
     emergency_virtual_key = _positive_int(
         raw.get("emergency_virtual_key"), field="emergency_virtual_key"
     )
     if emergency_virtual_key > 255:
         raise ValueError("emergency_virtual_key 不能超过 255")
-    max_key_hold_ms = _positive_int(
-        raw.get("max_key_hold_ms"), field="max_key_hold_ms"
-    )
+    max_key_hold_ms = _positive_int(raw.get("max_key_hold_ms"), field="max_key_hold_ms")
     if policy.pulse_ms > max_key_hold_ms:
         raise ValueError("navigation.pulse_ms 不能超过 max_key_hold_ms")
     armed_ready = raw.get("armed_ready", schema_version == 1)
@@ -330,9 +332,7 @@ def load_worker_settings(path: str | Path) -> WorkerSettings:
         armed_ready=armed_ready,
         emergency_virtual_key=emergency_virtual_key,
         max_key_hold_ms=max_key_hold_ms,
-        loop_interval_ms=_positive_int(
-            raw.get("loop_interval_ms"), field="loop_interval_ms"
-        ),
+        loop_interval_ms=_positive_int(raw.get("loop_interval_ms"), field="loop_interval_ms"),
         max_duration_seconds=_positive_number(
             raw.get("max_duration_seconds"), field="max_duration_seconds"
         ),
@@ -395,9 +395,9 @@ def build_windows_runtime(
             "模板路线尚未确认可 armed；完成标定、blind 评估和 dry-run 后，"
             "将配置 armed_ready 设为 true"
         )
-    allowed_keys = {
-        action.key for action in settings.policy.edge_actions.values()
-    } | set(settings.policy.recovery_keys)
+    allowed_keys = {action.key for action in settings.policy.edge_actions.values()} | set(
+        settings.policy.recovery_keys
+    )
     unsupported_keys = allowed_keys - SCAN_CODES.keys()
     if unsupported_keys:
         raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
@@ -464,6 +464,9 @@ def _snapshot_payload(
         "active_key": snapshot.active_key,
         "recovery_attempts": snapshot.recovery_attempts,
         "reason": snapshot.reason,
+        "pending_waypoint_id": snapshot.pending_waypoint_id,
+        "confirmation_count": snapshot.confirmation_count,
+        "confirmation_required": snapshot.confirmation_required,
         "pressed_keys": sorted(pressed_keys),
     }
 
@@ -548,9 +551,7 @@ def run_control_loop(
             )
             pending_replay_input_payloads.extend(input_payloads)
             if frame is not None:
-                payload = _snapshot_payload(
-                    snapshot, pressed_keys=actuator.pressed_keys
-                )
+                payload = _snapshot_payload(snapshot, pressed_keys=actuator.pressed_keys)
                 recorder.record(
                     frame,
                     metadata={
@@ -559,9 +560,7 @@ def run_control_loop(
                     },
                 )
                 pending_replay_input_payloads.clear()
-                event_writer.write(
-                    RuntimeEvent(event_type="frame", at_ns=now_ns, payload=payload)
-                )
+                event_writer.write(RuntimeEvent(event_type="frame", at_ns=now_ns, payload=payload))
                 frame_count += 1
             if snapshot.status in {NavigationStatus.ARRIVED, NavigationStatus.STOPPED}:
                 break
@@ -585,8 +584,7 @@ def run_control_loop(
             stopped_status = str(stopped.status)
         except BaseException as cleanup_error:
             cleanup_errors.append(
-                "controller.stop: "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
+                f"controller.stop: {type(cleanup_error).__name__}: {cleanup_error}"
             )
         try:
             _persist_new_input_events(
@@ -597,22 +595,18 @@ def run_control_loop(
             )
         except BaseException as cleanup_error:
             cleanup_errors.append(
-                "persist_input_events: "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
+                f"persist_input_events: {type(cleanup_error).__name__}: {cleanup_error}"
             )
         try:
             source.close()
         except BaseException as cleanup_error:
-            cleanup_errors.append(
-                f"source.close: {type(cleanup_error).__name__}: {cleanup_error}"
-            )
+            cleanup_errors.append(f"source.close: {type(cleanup_error).__name__}: {cleanup_error}")
         try:
             pressed_keys: list[str] | None = sorted(actuator.pressed_keys)
         except BaseException as cleanup_error:
             pressed_keys = None
             cleanup_errors.append(
-                "actuator.pressed_keys: "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
+                f"actuator.pressed_keys: {type(cleanup_error).__name__}: {cleanup_error}"
             )
         # 异常可能发生在没有按键可释放的时刻；单独落盘终态，避免只靠 stderr
         # 推断急停或前台窗口闸门是否真正生效。
@@ -634,8 +628,7 @@ def run_control_loop(
             )
         except BaseException as cleanup_error:
             cleanup_errors.append(
-                "event_writer.write: "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
+                f"event_writer.write: {type(cleanup_error).__name__}: {cleanup_error}"
             )
         for cleanup_error in cleanup_errors:
             error.add_note(f"异常清理阶段失败: {cleanup_error}")
@@ -688,9 +681,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="只校验配置和模板 Profile，不解析窗口、截图或发送输入",
     )
     args = parser.parse_args(argv)
-    artifacts = args.artifacts or Path("artifacts/runs") / time.strftime(
-        "%Y%m%d-%H%M%S"
-    )
+    artifacts = args.artifacts or Path("artifacts/runs") / time.strftime("%Y%m%d-%H%M%S")
     run_id = args.run_id or uuid.uuid4().hex
     try:
         settings = load_worker_settings(args.config)

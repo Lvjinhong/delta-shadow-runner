@@ -43,6 +43,7 @@ class NavigationStatus(StrEnum):
     LOCALIZING = "localizing"
     NAVIGATING = "navigating"
     RECOVERING = "recovering"
+    RELOCALIZING = "relocalizing"
     ARRIVED = "arrived"
     STOPPED = "stopped"
 
@@ -116,8 +117,7 @@ class WaypointObserver:
         if squared_length <= 1e-12:
             return math.dist(point, start)
         projection = (
-            (point[0] - start[0]) * delta_x
-            + (point[1] - start[1]) * delta_y
+            (point[0] - start[0]) * delta_x + (point[1] - start[1]) * delta_y
         ) / squared_length
         bounded = max(0.0, min(1.0, projection))
         nearest = (start[0] + bounded * delta_x, start[1] + bounded * delta_y)
@@ -166,8 +166,7 @@ class WaypointObserver:
             )
             global_waypoint_id = (
                 global_nearest_id
-                if global_nearest_distance <= self._localization_radius
-                and not global_tied
+                if global_nearest_distance <= self._localization_radius and not global_tied
                 else None
             )
             waypoint_positions = (
@@ -188,8 +187,7 @@ class WaypointObserver:
                 out_of_scope_waypoint_id = global_waypoint_id
                 scope_violation = True
             elif allowed is not None and (
-                self._distance_to_scope(centroid, waypoint_positions)
-                > self._localization_radius
+                self._distance_to_scope(centroid, waypoint_positions) > self._localization_radius
             ):
                 scope_violation = True
             else:
@@ -229,8 +227,7 @@ class RouteAction:
         if not isinstance(self.key, str) or not self.key:
             raise ValueError("路线动作按键必须是非空字符串")
         if any(
-            type(delta) is not int or abs(delta) > 4096
-            for delta in (self.mouse_dx, self.mouse_dy)
+            type(delta) is not int or abs(delta) > 4096 for delta in (self.mouse_dx, self.mouse_dy)
         ):
             raise ValueError("相对鼠标位移必须是 -4096..4096 的整数")
 
@@ -245,6 +242,9 @@ class NavigationPolicy:
     max_recovery_attempts: int
     recovery_keys: tuple[str, ...]
     arrival_confirmations: int
+    initial_waypoint_confirmations: int
+    waypoint_advance_confirmations: int
+    relocalization_confirmations: int
 
     def __post_init__(self) -> None:
         if type(self.pulse_ms) is not int or self.pulse_ms <= 0:
@@ -253,18 +253,20 @@ class NavigationPolicy:
             raise ValueError("最小视觉进展必须是正有限数")
         if isinstance(self.stuck_after_ms, bool) or self.stuck_after_ms <= 0:
             raise ValueError("卡住超时必须为正数")
-        if (
-            isinstance(self.localization_timeout_ms, bool)
-            or self.localization_timeout_ms <= 0
-        ):
+        if isinstance(self.localization_timeout_ms, bool) or self.localization_timeout_ms <= 0:
             raise ValueError("重定位超时必须为正数")
-        if (
-            isinstance(self.max_recovery_attempts, bool)
-            or self.max_recovery_attempts < 0
-        ):
+        if isinstance(self.max_recovery_attempts, bool) or self.max_recovery_attempts < 0:
             raise ValueError("最大恢复次数不能为负数")
         if isinstance(self.arrival_confirmations, bool) or self.arrival_confirmations <= 0:
             raise ValueError("到达确认次数必须为正数")
+        confirmation_minimums = {
+            "初始 waypoint 确认次数": (self.initial_waypoint_confirmations, 3),
+            "waypoint 推进确认次数": (self.waypoint_advance_confirmations, 2),
+            "重定位确认次数": (self.relocalization_confirmations, 3),
+        }
+        for label, (value, minimum) in confirmation_minimums.items():
+            if type(value) is not int or value < minimum:
+                raise ValueError(f"{label}不能小于 {minimum}")
         if self.max_recovery_attempts > 0 and not self.recovery_keys:
             raise ValueError("启用恢复时必须配置恢复按键")
         normalized_actions: dict[tuple[str, str], RouteAction] = {}
@@ -292,6 +294,9 @@ class NavigationSnapshot:
     active_key: str | None
     recovery_attempts: int
     reason: str | None
+    pending_waypoint_id: str | None
+    confirmation_count: int
+    confirmation_required: int
 
 
 class VisualNavigationController:
@@ -319,11 +324,15 @@ class VisualNavigationController:
         self._prepared_edge: tuple[str, str] | None = None
         self._last_frame_sequence: int | None = None
         self._last_captured_at_ns: int | None = None
+        self._last_now_ns: int | None = None
         self._localizing_since_ns: int | None = None
         self._last_progress_at_ns: int | None = None
         self._best_distance: float | None = None
         self._recovery_attempts = 0
         self._arrival_confirmations = 0
+        self._pending_waypoint_id: str | None = None
+        self._confirmation_count = 0
+        self._confirmation_required = 0
         self._reason: str | None = None
 
     def _current_node_id(self) -> str | None:
@@ -344,9 +353,7 @@ class VisualNavigationController:
         next_node_id = self._next_node_id()
         return ObservationScope(
             allowed_waypoint_ids=frozenset(
-                node_id
-                for node_id in (current_node_id, next_node_id)
-                if node_id is not None
+                node_id for node_id in (current_node_id, next_node_id) if node_id is not None
             )
         )
 
@@ -359,6 +366,55 @@ class VisualNavigationController:
             active_key=self._active_key,
             recovery_attempts=self._recovery_attempts,
             reason=self._reason,
+            pending_waypoint_id=self._pending_waypoint_id,
+            confirmation_count=self._confirmation_count,
+            confirmation_required=self._confirmation_required,
+        )
+
+    def _guard_control_clock(self, *, now_ns: int) -> NavigationSnapshot | None:
+        if type(now_ns) is not int or now_ns < 0:
+            effective_now_ns = self._last_now_ns if self._last_now_ns is not None else 0
+            return self._stop_internal(
+                now_ns=effective_now_ns,
+                reason="控制时钟必须是非负整数",
+            )
+        if self._last_now_ns is not None and now_ns < self._last_now_ns:
+            return self._stop_internal(
+                now_ns=self._last_now_ns,
+                reason="控制时钟发生倒退",
+            )
+        self._last_now_ns = now_ns
+        return None
+
+    @staticmethod
+    def _valid_frame_marker(value: object) -> bool:
+        return type(value) is int and value >= 0
+
+    def _clear_waypoint_confirmation(self) -> None:
+        self._pending_waypoint_id = None
+        self._confirmation_count = 0
+        self._confirmation_required = 0
+
+    def _record_waypoint_confirmation(
+        self,
+        waypoint_id: str,
+        *,
+        required: int,
+    ) -> bool:
+        if self._pending_waypoint_id == waypoint_id:
+            self._confirmation_count += 1
+        else:
+            self._pending_waypoint_id = waypoint_id
+            self._confirmation_count = 1
+        self._confirmation_required = required
+        return self._confirmation_count >= required
+
+    def _localization_timed_out(self, *, now_ns: int) -> bool:
+        if self._localizing_since_ns is None:
+            self._localizing_since_ns = now_ns
+            return False
+        return (
+            now_ns - self._localizing_since_ns >= self._policy.localization_timeout_ms * 1_000_000
         )
 
     def _release_active(self, *, now_ns: int, reason: str) -> None:
@@ -406,6 +462,7 @@ class VisualNavigationController:
         self._active_key = None
         self._pulse_deadline_ns = None
         self._prepared_edge = None
+        self._clear_waypoint_confirmation()
         self._status = NavigationStatus.STOPPED
         self._reason = reason
         return self._snapshot()
@@ -415,9 +472,7 @@ class VisualNavigationController:
             route = find_shortest_path(self._graph, waypoint_id, self._goal_node_id)
             for source_id, target_id in pairwise(route):
                 if (source_id, target_id) not in self._policy.edge_actions:
-                    raise ValueError(
-                        f'路线边 "{source_id}->{target_id}" 缺少动作配置'
-                    )
+                    raise ValueError(f'路线边 "{source_id}->{target_id}" 缺少动作配置')
         except ValueError as error:
             self._stop_internal(now_ns=now_ns, reason=str(error))
             return False
@@ -430,20 +485,32 @@ class VisualNavigationController:
         self._last_progress_at_ns = now_ns
         self._recovery_attempts = 0
         self._arrival_confirmations = 0
+        self._clear_waypoint_confirmation()
         return True
 
-    def _enter_localizing(self, *, now_ns: int, reason: str) -> NavigationSnapshot:
+    def _enter_localizing(
+        self,
+        *,
+        now_ns: int,
+        reason: str,
+        status: NavigationStatus,
+    ) -> NavigationSnapshot:
         self._actuator.release_all(now_ns=now_ns, reason=reason)
         self._active_key = None
         self._pulse_deadline_ns = None
-        self._status = NavigationStatus.LOCALIZING
+        self._status = status
         self._reason = reason
-        if self._localizing_since_ns is None:
-            self._localizing_since_ns = now_ns
-        elapsed = now_ns - self._localizing_since_ns
-        if elapsed >= self._policy.localization_timeout_ms * 1_000_000:
+        if self._localization_timed_out(now_ns=now_ns):
             return self._stop_internal(now_ns=now_ns, reason="视觉重定位超时")
         return self._snapshot()
+
+    def _advance_to_next(self, *, now_ns: int) -> None:
+        self._current_index += 1
+        self._best_distance = None
+        self._last_progress_at_ns = now_ns
+        self._recovery_attempts = 0
+        self._arrival_confirmations = 0
+        self._clear_waypoint_confirmation()
 
     def _distance_to_next(self, centroid: tuple[float, float]) -> float:
         next_node_id = self._next_node_id()
@@ -458,9 +525,7 @@ class VisualNavigationController:
         self._pulse_deadline_ns = None
         if self._recovery_attempts >= self._policy.max_recovery_attempts:
             return self._stop_internal(now_ns=now_ns, reason="恢复次数已耗尽")
-        key = self._policy.recovery_keys[
-            self._recovery_attempts % len(self._policy.recovery_keys)
-        ]
+        key = self._policy.recovery_keys[self._recovery_attempts % len(self._policy.recovery_keys)]
         self._recovery_attempts += 1
         self._status = NavigationStatus.RECOVERING
         self._reason = "视觉进展超时，执行有限恢复"
@@ -482,12 +547,22 @@ class VisualNavigationController:
     def on_frame(self, frame: CapturedFrame, *, now_ns: int) -> NavigationSnapshot:
         if self._status in {NavigationStatus.ARRIVED, NavigationStatus.STOPPED}:
             return self._snapshot()
+        clock_failure = self._guard_control_clock(now_ns=now_ns)
+        if clock_failure is not None:
+            return clock_failure
+        if not self._valid_frame_marker(frame.sequence) or not self._valid_frame_marker(
+            frame.captured_at_ns
+        ):
+            return self._stop_internal(
+                now_ns=now_ns,
+                reason="截图帧元数据必须是非负整数",
+            )
         self._release_due(now_ns=now_ns)
-        if (
-            self._last_frame_sequence is not None
-            and (
-                frame.sequence <= self._last_frame_sequence
-                or frame.captured_at_ns <= (self._last_captured_at_ns or -1)
+        if self._last_frame_sequence is not None and (
+            frame.sequence <= self._last_frame_sequence
+            or (
+                self._last_captured_at_ns is not None
+                and frame.captured_at_ns <= self._last_captured_at_ns
             )
         ):
             return self._stop_internal(now_ns=now_ns, reason="收到重复或过期截图帧")
@@ -498,6 +573,21 @@ class VisualNavigationController:
             frame,
             scope=self._observation_scope(),
         )
+        if not self._valid_frame_marker(observation.frame_sequence) or not self._valid_frame_marker(
+            observation.captured_at_ns
+        ):
+            return self._stop_internal(
+                now_ns=now_ns,
+                reason="视觉观测元数据必须是非负整数",
+            )
+        if (
+            observation.frame_sequence != frame.sequence
+            or observation.captured_at_ns != frame.captured_at_ns
+        ):
+            return self._stop_internal(
+                now_ns=now_ns,
+                reason="视觉观测元数据与截图帧不一致",
+            )
         if observation.scope_violation or observation.out_of_scope_waypoint_id is not None:
             detail = (
                 f'的非相邻 waypoint: "{observation.out_of_scope_waypoint_id}"'
@@ -510,24 +600,89 @@ class VisualNavigationController:
             )
         if observation.centroid is None:
             self._arrival_confirmations = 0
-            return self._enter_localizing(now_ns=now_ns, reason="视觉锚点低置信或缺失")
+            self._clear_waypoint_confirmation()
+            status = NavigationStatus.RELOCALIZING if self._route else NavigationStatus.LOCALIZING
+            return self._enter_localizing(
+                now_ns=now_ns,
+                reason="视觉锚点低置信或缺失",
+                status=status,
+            )
 
         if self._status is NavigationStatus.LOCALIZING:
+            if self._localization_timed_out(now_ns=now_ns):
+                return self._stop_internal(now_ns=now_ns, reason="视觉重定位超时")
             if observation.waypoint_id is None:
-                return self._enter_localizing(now_ns=now_ns, reason="无法唯一定位 waypoint")
+                self._clear_waypoint_confirmation()
+                return self._enter_localizing(
+                    now_ns=now_ns,
+                    reason="无法唯一定位 waypoint",
+                    status=NavigationStatus.LOCALIZING,
+                )
+            confirmed = self._record_waypoint_confirmation(
+                observation.waypoint_id,
+                required=self._policy.initial_waypoint_confirmations,
+            )
+            if not confirmed:
+                return self._enter_localizing(
+                    now_ns=now_ns,
+                    reason="等待连续截图确认初始 waypoint",
+                    status=NavigationStatus.LOCALIZING,
+                )
             if not self._plan_from(observation.waypoint_id, now_ns=now_ns):
                 return self._snapshot()
+
+        if self._status is NavigationStatus.RELOCALIZING:
+            if self._localization_timed_out(now_ns=now_ns):
+                return self._stop_internal(now_ns=now_ns, reason="视觉重定位超时")
+            current_node_id = self._current_node_id()
+            next_node_id = self._next_node_id()
+            if observation.waypoint_id not in {current_node_id, next_node_id}:
+                self._clear_waypoint_confirmation()
+                return self._enter_localizing(
+                    now_ns=now_ns,
+                    reason="重定位尚未落在当前路线 waypoint",
+                    status=NavigationStatus.RELOCALIZING,
+                )
+            confirmed_waypoint_id = observation.waypoint_id
+            if confirmed_waypoint_id is None:
+                raise AssertionError("重定位确认必须包含 waypoint ID")
+            confirmed = self._record_waypoint_confirmation(
+                confirmed_waypoint_id,
+                required=self._policy.relocalization_confirmations,
+            )
+            if not confirmed:
+                return self._enter_localizing(
+                    now_ns=now_ns,
+                    reason="等待连续截图确认重定位 waypoint",
+                    status=NavigationStatus.RELOCALIZING,
+                )
+            self._clear_waypoint_confirmation()
+            self._status = NavigationStatus.NAVIGATING
+            self._reason = None
+            self._localizing_since_ns = None
+            if confirmed_waypoint_id == next_node_id:
+                self._advance_to_next(now_ns=now_ns)
 
         current_node_id = self._current_node_id()
         next_node_id = self._next_node_id()
         if observation.waypoint_id == self._goal_node_id and current_node_id == self._goal_node_id:
             return self._handle_goal_confirmation(now_ns=now_ns)
         if next_node_id is not None and observation.waypoint_id == next_node_id:
-            self._release_active(now_ns=now_ns, reason="视觉确认下一 waypoint")
-            self._current_index += 1
-            self._best_distance = None
-            self._last_progress_at_ns = now_ns
-            self._recovery_attempts = 0
+            self._actuator.release_all(
+                now_ns=now_ns,
+                reason="等待连续截图确认下一 waypoint",
+            )
+            self._active_key = None
+            self._pulse_deadline_ns = None
+            confirmed = self._record_waypoint_confirmation(
+                next_node_id,
+                required=self._policy.waypoint_advance_confirmations,
+            )
+            if not confirmed:
+                self._reason = "等待连续截图确认下一 waypoint"
+                return self._snapshot()
+            self._advance_to_next(now_ns=now_ns)
+            self._reason = None
             current_node_id = self._current_node_id()
             next_node_id = self._next_node_id()
             if current_node_id == self._goal_node_id:
@@ -536,6 +691,7 @@ class VisualNavigationController:
             return self._stop_internal(now_ns=now_ns, reason="视觉定位跳到了非相邻 waypoint")
         else:
             self._arrival_confirmations = 0
+            self._clear_waypoint_confirmation()
 
         if next_node_id is None:
             return self._snapshot()
@@ -554,8 +710,7 @@ class VisualNavigationController:
             self._recovery_attempts = 0
         elif (
             self._last_progress_at_ns is not None
-            and now_ns - self._last_progress_at_ns
-            >= self._policy.stuck_after_ms * 1_000_000
+            and now_ns - self._last_progress_at_ns >= self._policy.stuck_after_ms * 1_000_000
         ):
             return self._start_recovery(now_ns=now_ns)
 
@@ -567,9 +722,12 @@ class VisualNavigationController:
     def on_timer(self, *, now_ns: int) -> NavigationSnapshot:
         if self._status in {NavigationStatus.ARRIVED, NavigationStatus.STOPPED}:
             return self._snapshot()
+        clock_failure = self._guard_control_clock(now_ns=now_ns)
+        if clock_failure is not None:
+            return clock_failure
         self._release_due(now_ns=now_ns)
         if (
-            self._status is NavigationStatus.LOCALIZING
+            self._status in {NavigationStatus.LOCALIZING, NavigationStatus.RELOCALIZING}
             and self._localizing_since_ns is not None
             and now_ns - self._localizing_since_ns
             >= self._policy.localization_timeout_ms * 1_000_000
@@ -578,4 +736,7 @@ class VisualNavigationController:
         return self._snapshot()
 
     def stop(self, *, now_ns: int, reason: str) -> NavigationSnapshot:
+        clock_failure = self._guard_control_clock(now_ns=now_ns)
+        if clock_failure is not None:
+            return clock_failure
         return self._stop_internal(now_ns=now_ns, reason=reason)

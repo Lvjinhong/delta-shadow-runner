@@ -10,6 +10,7 @@ from delta_vision.navigation import (
     ObservationScope,
     RouteAction,
     VisualNavigationController,
+    WaypointObservation,
     WaypointObserver,
 )
 from delta_vision.perception import ColorAnchorDetector
@@ -49,14 +50,12 @@ def _observer(*, radius: float = 6) -> WaypointObserver:
     )
     return WaypointObserver(
         detector=detector,
-        waypoint_positions={
-            node_id: (node.x, node.y) for node_id, node in _graph().items()
-        },
+        waypoint_positions={node_id: (node.x, node.y) for node_id, node in _graph().items()},
         localization_radius=radius,
     )
 
 
-def _controller(**policy_overrides):
+def _controller(*, observer=None, **policy_overrides):
     policy_values = {
         "edge_actions": {
             ("A", "B"): "w",
@@ -71,19 +70,36 @@ def _controller(**policy_overrides):
         "max_recovery_attempts": 2,
         "recovery_keys": ("s", "a"),
         "arrival_confirmations": 2,
+        "initial_waypoint_confirmations": 3,
+        "waypoint_advance_confirmations": 2,
+        "relocalization_confirmations": 3,
     }
     policy_values.update(policy_overrides)
-    actuator = DryRunActuator(
-        allowed_keys={"w", "a", "s", "d"}, max_key_hold_ms=150
-    )
+    actuator = DryRunActuator(allowed_keys={"w", "a", "s", "d"}, max_key_hold_ms=150)
     controller = VisualNavigationController(
         graph=_graph(),
-        observer=_observer(),
+        observer=observer or _observer(),
         actuator=actuator,
         goal_node_id="D",
         policy=NavigationPolicy(**policy_values),
     )
     return controller, actuator
+
+
+def _confirm_start(
+    controller: VisualNavigationController,
+    *,
+    sequence: int = 0,
+    now_ns: int = 0,
+):
+    snapshot = None
+    for offset in range(3):
+        snapshot = controller.on_frame(
+            _frame(sequence + offset, 10, 80),
+            now_ns=now_ns,
+        )
+    assert snapshot is not None
+    return snapshot
 
 
 def test_waypoint_observer_localizes_only_unique_nearby_anchor() -> None:
@@ -136,10 +152,336 @@ def test_observation_scope_is_immutable_and_empty_scope_fails_closed() -> None:
     assert observation.waypoint_id is None
 
 
+def test_initial_localization_requires_three_consecutive_waypoint_frames() -> None:
+    controller, actuator = _controller()
+
+    first = controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    second = controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+    confirmed = controller.on_frame(_frame(2, 10, 80), now_ns=20_000_000)
+
+    assert first.status is NavigationStatus.LOCALIZING
+    assert first.pending_waypoint_id == "A"
+    assert first.confirmation_count == 1
+    assert first.confirmation_required == 3
+    assert second.status is NavigationStatus.LOCALIZING
+    assert second.confirmation_count == 2
+    assert confirmed.status is NavigationStatus.NAVIGATING
+    assert confirmed.confirmation_count == 0
+    assert confirmed.active_key == "w"
+    assert [event.kind for event in actuator.events] == ["key_down"]
+
+
+def test_initial_localization_mismatch_resets_confirmation_streak() -> None:
+    controller, actuator = _controller()
+
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+    changed = controller.on_frame(_frame(2, 10, 10), now_ns=20_000_000)
+    controller.on_frame(_frame(3, 10, 80), now_ns=30_000_000)
+    waiting = controller.on_frame(_frame(4, 10, 80), now_ns=40_000_000)
+    confirmed = controller.on_frame(_frame(5, 10, 80), now_ns=50_000_000)
+
+    assert changed.pending_waypoint_id == "B"
+    assert changed.confirmation_count == 1
+    assert waiting.status is NavigationStatus.LOCALIZING
+    assert waiting.confirmation_count == 2
+    assert confirmed.status is NavigationStatus.NAVIGATING
+    assert [event.kind for event in actuator.events] == ["key_down"]
+
+
+def test_waypoint_advance_releases_and_requires_two_consecutive_frames() -> None:
+    controller, actuator = _controller()
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+    controller.on_frame(_frame(2, 10, 80), now_ns=20_000_000)
+
+    first = controller.on_frame(_frame(3, 10, 10), now_ns=30_000_000)
+    confirmed = controller.on_frame(_frame(4, 10, 10), now_ns=40_000_000)
+
+    assert first.current_node_id == "A"
+    assert first.next_node_id == "B"
+    assert first.active_key is None
+    assert first.pending_waypoint_id == "B"
+    assert first.confirmation_count == 1
+    assert first.confirmation_required == 2
+    assert confirmed.current_node_id == "B"
+    assert confirmed.next_node_id == "D"
+    assert confirmed.active_key == "d"
+    assert [(event.kind, event.key) for event in actuator.events] == [
+        ("key_down", "w"),
+        ("key_up", "w"),
+        ("key_down", "d"),
+    ]
+
+
+def test_missing_anchor_enters_relocalizing_and_requires_three_frames() -> None:
+    controller, actuator = _controller()
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+    controller.on_frame(_frame(2, 10, 80), now_ns=20_000_000)
+
+    missing = controller.on_frame(_frame(3, None, None), now_ns=30_000_000)
+    first = controller.on_frame(_frame(4, 10, 80), now_ns=40_000_000)
+    second = controller.on_frame(_frame(5, 10, 80), now_ns=50_000_000)
+    resumed = controller.on_frame(_frame(6, 10, 80), now_ns=60_000_000)
+
+    assert missing.status is NavigationStatus.RELOCALIZING
+    assert first.status is NavigationStatus.RELOCALIZING
+    assert first.confirmation_count == 1
+    assert second.status is NavigationStatus.RELOCALIZING
+    assert second.confirmation_count == 2
+    assert resumed.status is NavigationStatus.NAVIGATING
+    assert resumed.active_key == "w"
+    assert [(event.kind, event.key) for event in actuator.events] == [
+        ("key_down", "w"),
+        ("key_up", "w"),
+        ("key_down", "w"),
+    ]
+
+
+def test_relocalization_at_next_waypoint_advances_after_three_frames() -> None:
+    controller, actuator = _controller()
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+    controller.on_frame(_frame(2, 10, 80), now_ns=20_000_000)
+    controller.on_frame(_frame(3, None, None), now_ns=30_000_000)
+
+    controller.on_frame(_frame(4, 10, 10), now_ns=40_000_000)
+    controller.on_frame(_frame(5, 10, 10), now_ns=50_000_000)
+    resumed = controller.on_frame(_frame(6, 10, 10), now_ns=60_000_000)
+
+    assert resumed.status is NavigationStatus.NAVIGATING
+    assert resumed.current_node_id == "B"
+    assert resumed.next_node_id == "D"
+    assert resumed.active_key == "d"
+    assert [(event.kind, event.key) for event in actuator.events] == [
+        ("key_down", "w"),
+        ("key_up", "w"),
+        ("key_down", "d"),
+    ]
+
+
+def test_initial_uncertain_frame_clears_pending_confirmation() -> None:
+    controller, actuator = _controller()
+
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+    uncertain = controller.on_frame(_frame(2, None, None), now_ns=20_000_000)
+    controller.on_frame(_frame(3, 10, 80), now_ns=30_000_000)
+    waiting = controller.on_frame(_frame(4, 10, 80), now_ns=40_000_000)
+    confirmed = controller.on_frame(_frame(5, 10, 80), now_ns=50_000_000)
+
+    assert uncertain.confirmation_count == 0
+    assert waiting.status is NavigationStatus.LOCALIZING
+    assert waiting.confirmation_count == 2
+    assert confirmed.status is NavigationStatus.NAVIGATING
+    assert [event.kind for event in actuator.events] == ["key_down"]
+
+
+def test_next_candidate_interruption_resets_advance_confirmation() -> None:
+    controller, actuator = _controller()
+    _confirm_start(controller)
+
+    first_b = controller.on_frame(_frame(3, 10, 10), now_ns=30_000_000)
+    back_at_a = controller.on_frame(_frame(4, 10, 80), now_ns=40_000_000)
+    second_first_b = controller.on_frame(_frame(5, 10, 10), now_ns=50_000_000)
+    confirmed = controller.on_frame(_frame(6, 10, 10), now_ns=60_000_000)
+
+    assert first_b.confirmation_count == 1
+    assert back_at_a.confirmation_count == 0
+    assert back_at_a.current_node_id == "A"
+    assert second_first_b.current_node_id == "A"
+    assert second_first_b.confirmation_count == 1
+    assert confirmed.current_node_id == "B"
+    assert actuator.pressed_keys == frozenset({"d"})
+
+
+def test_partial_initial_confirmation_does_not_extend_timeout() -> None:
+    controller, actuator = _controller(localization_timeout_ms=100)
+
+    first = controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    second = controller.on_frame(_frame(1, 10, 80), now_ns=99_999_999)
+    stopped = controller.on_frame(_frame(2, 10, 80), now_ns=100_000_000)
+
+    assert first.status is NavigationStatus.LOCALIZING
+    assert second.status is NavigationStatus.LOCALIZING
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "超时" in (stopped.reason or "")
+    assert actuator.events == ()
+
+
+def test_non_adjacent_jump_is_terminal_while_relocalizing() -> None:
+    controller, actuator = _controller()
+    _confirm_start(controller)
+    controller.on_frame(_frame(3, None, None), now_ns=30_000_000)
+
+    stopped = controller.on_frame(_frame(4, 80, 80), now_ns=40_000_000)
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert stopped.confirmation_count == 0
+    assert "观察范围外" in (stopped.reason or "")
+    assert actuator.pressed_keys == frozenset()
+
+
+def test_cached_observer_result_cannot_count_as_fresh_confirmation() -> None:
+    class CachedObserver:
+        def observe(self, frame, *, scope):
+            return WaypointObservation(
+                frame_sequence=0,
+                captured_at_ns=1_000_000,
+                confidence=1,
+                centroid=(10, 80),
+                waypoint_id="A",
+            )
+
+    controller, actuator = _controller(observer=CachedObserver())
+
+    first = controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    stopped = controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+
+    assert first.status is NavigationStatus.LOCALIZING
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "观测" in (stopped.reason or "")
+    assert actuator.events == ()
+
+
+def test_zero_capture_timestamp_must_still_be_strictly_increasing() -> None:
+    controller, actuator = _controller()
+    image = _frame(0, 10, 80).image
+
+    first = controller.on_frame(CapturedFrame(0, 0, image, "fixture"), now_ns=0)
+    stopped = controller.on_frame(
+        CapturedFrame(1, 0, image, "fixture"),
+        now_ns=10_000_000,
+    )
+
+    assert first.status is NavigationStatus.LOCALIZING
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "过期" in (stopped.reason or "")
+    assert actuator.events == ()
+
+
+def test_control_clock_rollback_stops_before_confirmation_can_move() -> None:
+    controller, actuator = _controller(localization_timeout_ms=100)
+
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 80), now_ns=99_999_999)
+    stopped = controller.on_frame(_frame(2, 10, 80), now_ns=10_000_000)
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "时钟" in (stopped.reason or "")
+    assert actuator.events == ()
+
+
+def test_non_integer_control_clock_stops_without_input() -> None:
+    controller, actuator = _controller()
+
+    stopped = controller.on_frame(_frame(0, 10, 80), now_ns=True)
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "时钟" in (stopped.reason or "")
+    assert actuator.events == ()
+
+
+def test_stale_frame_releases_active_navigation_key() -> None:
+    controller, actuator = _controller()
+    _confirm_start(controller)
+
+    stopped = controller.on_frame(_frame(2, 10, 80), now_ns=10_000_000)
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "过期" in (stopped.reason or "")
+    assert [(event.kind, event.key) for event in actuator.events] == [
+        ("key_down", "w"),
+        ("key_up", "w"),
+    ]
+
+
+def test_partial_relocalization_cannot_cross_timeout_boundary() -> None:
+    controller, actuator = _controller(localization_timeout_ms=100)
+    _confirm_start(controller)
+    controller.on_frame(_frame(3, None, None), now_ns=10_000_000)
+    controller.on_frame(_frame(4, 10, 80), now_ns=50_000_000)
+    controller.on_frame(_frame(5, 10, 80), now_ns=100_000_000)
+
+    stopped = controller.on_frame(_frame(6, 10, 80), now_ns=110_000_000)
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "超时" in (stopped.reason or "")
+    assert actuator.pressed_keys == frozenset()
+    assert [(event.kind, event.key) for event in actuator.events] == [
+        ("key_down", "w"),
+        ("key_up", "w"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sequence", "captured_at_ns"),
+    [
+        (None, None),
+        (True, 0),
+        (0, True),
+        (1.5, 0),
+        (0, -1),
+    ],
+)
+def test_invalid_frame_metadata_cannot_count_as_confirmation(
+    sequence,
+    captured_at_ns,
+) -> None:
+    controller, actuator = _controller()
+    image = _frame(0, 10, 80).image
+    invalid = CapturedFrame(sequence, captured_at_ns, image, "fixture")
+
+    stopped = controller.on_frame(invalid, now_ns=0)
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "帧元数据" in (stopped.reason or "")
+    assert actuator.events == ()
+
+
+def test_invalid_frame_metadata_releases_active_key() -> None:
+    controller, actuator = _controller()
+    _confirm_start(controller)
+    image = _frame(3, 10, 80).image
+
+    stopped = controller.on_frame(
+        CapturedFrame(None, None, image, "fixture"),
+        now_ns=10_000_000,
+    )
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert actuator.pressed_keys == frozenset()
+    assert [(event.kind, event.key) for event in actuator.events] == [
+        ("key_down", "w"),
+        ("key_up", "w"),
+    ]
+
+
+def test_boolean_observation_sequence_is_not_equal_to_integer_frame_sequence() -> None:
+    class BooleanSequenceObserver:
+        def observe(self, frame, *, scope):
+            return WaypointObservation(
+                frame_sequence=True,
+                captured_at_ns=frame.captured_at_ns,
+                confidence=1,
+                centroid=(10, 80),
+                waypoint_id="A",
+            )
+
+    controller, actuator = _controller(observer=BooleanSequenceObserver())
+
+    stopped = controller.on_frame(_frame(1, 10, 80), now_ns=0)
+
+    assert stopped.status is NavigationStatus.STOPPED
+    assert "观测元数据" in (stopped.reason or "")
+    assert actuator.events == ()
+
+
 def test_controller_uses_weighted_astar_edge_action() -> None:
     controller, actuator = _controller()
 
-    snapshot = controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    snapshot = _confirm_start(controller)
 
     assert snapshot.status is NavigationStatus.NAVIGATING
     assert snapshot.route == ("A", "B", "D")
@@ -151,7 +493,7 @@ def test_controller_uses_weighted_astar_edge_action() -> None:
 
 def test_pulse_releases_at_deadline_without_repeating_key_down() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
 
     controller.on_timer(now_ns=99_999_999)
     assert [event.kind for event in actuator.events] == ["key_down"]
@@ -164,9 +506,9 @@ def test_pulse_releases_at_deadline_without_repeating_key_down() -> None:
 
 def test_new_frame_during_active_pulse_does_not_repeat_key_down() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
 
-    snapshot = controller.on_frame(_frame(1, 10, 70), now_ns=50_000_000)
+    snapshot = controller.on_frame(_frame(3, 10, 70), now_ns=50_000_000)
 
     assert snapshot.active_key == "w"
     assert [event.kind for event in actuator.events] == ["key_down"]
@@ -180,10 +522,10 @@ def test_route_action_turns_mouse_once_then_repeats_only_key_pulse() -> None:
         }
     )
 
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
-    controller.on_frame(_frame(1, 10, 70), now_ns=50_000_000)
+    _confirm_start(controller)
+    controller.on_frame(_frame(3, 10, 70), now_ns=50_000_000)
     controller.on_timer(now_ns=100_000_000)
-    controller.on_frame(_frame(2, 10, 60), now_ns=110_000_000)
+    controller.on_frame(_frame(4, 10, 60), now_ns=110_000_000)
 
     assert [event.kind for event in actuator.events] == [
         "mouse_move",
@@ -203,8 +545,9 @@ def test_route_action_turns_again_only_after_visual_edge_advance() -> None:
         }
     )
 
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
-    controller.on_frame(_frame(1, 10, 10), now_ns=100_000_000)
+    _confirm_start(controller)
+    controller.on_frame(_frame(3, 10, 10), now_ns=100_000_000)
+    controller.on_frame(_frame(4, 10, 10), now_ns=100_000_001)
 
     mouse_events = [event for event in actuator.events if event.kind == "mouse_move"]
     assert [(event.dx, event.dy) for event in mouse_events] == [(-80, 0), (240, 0)]
@@ -218,10 +561,12 @@ def test_same_edge_relocalization_does_not_repeat_mouse_turn() -> None:
             ("B", "D"): RouteAction(key="w"),
         }
     )
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
-    controller.on_frame(_frame(1, None, None), now_ns=50_000_000)
+    _confirm_start(controller)
+    controller.on_frame(_frame(3, None, None), now_ns=50_000_000)
 
-    relocalized = controller.on_frame(_frame(2, 10, 80), now_ns=100_000_000)
+    controller.on_frame(_frame(4, 10, 80), now_ns=100_000_000)
+    controller.on_frame(_frame(5, 10, 80), now_ns=110_000_000)
+    relocalized = controller.on_frame(_frame(6, 10, 80), now_ns=120_000_000)
 
     assert relocalized.status is NavigationStatus.NAVIGATING
     assert [event.kind for event in actuator.events].count("mouse_move") == 1
@@ -230,14 +575,14 @@ def test_same_edge_relocalization_does_not_repeat_mouse_turn() -> None:
 
 def test_low_confidence_releases_active_pulse_and_times_out_without_input() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
 
-    uncertain = controller.on_frame(_frame(1, None, None), now_ns=50_000_000)
+    uncertain = controller.on_frame(_frame(3, None, None), now_ns=50_000_000)
     event_count = len(actuator.events)
-    stopped = controller.on_frame(_frame(2, None, None), now_ns=250_000_000)
-    controller.on_frame(_frame(3, 10, 80), now_ns=300_000_000)
+    stopped = controller.on_frame(_frame(4, None, None), now_ns=250_000_000)
+    controller.on_frame(_frame(5, 10, 80), now_ns=300_000_000)
 
-    assert uncertain.status is NavigationStatus.LOCALIZING
+    assert uncertain.status is NavigationStatus.RELOCALIZING
     assert stopped.status is NavigationStatus.STOPPED
     assert actuator.events[1].kind == "key_up"
     assert len(actuator.events) == event_count
@@ -246,13 +591,13 @@ def test_low_confidence_releases_active_pulse_and_times_out_without_input() -> N
 
 def test_stuck_comes_from_visual_non_progress_and_recovery_is_bounded() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
     controller.on_timer(now_ns=100_000_000)
-    controller.on_frame(_frame(1, 10, 60), now_ns=100_000_001)
+    controller.on_frame(_frame(3, 10, 60), now_ns=100_000_001)
     controller.on_timer(now_ns=200_000_001)
-    controller.on_frame(_frame(2, 10, 60), now_ns=250_000_000)
+    controller.on_frame(_frame(4, 10, 60), now_ns=250_000_000)
 
-    recovering = controller.on_frame(_frame(3, 10, 60), now_ns=400_000_001)
+    recovering = controller.on_frame(_frame(5, 10, 60), now_ns=400_000_001)
 
     assert recovering.status is NavigationStatus.RECOVERING
     assert recovering.active_key == "s"
@@ -262,9 +607,9 @@ def test_stuck_comes_from_visual_non_progress_and_recovery_is_bounded() -> None:
 
     controller.on_timer(now_ns=500_000_001)
     waiting = controller.on_timer(now_ns=550_000_001)
-    controller.on_frame(_frame(4, 10, 60), now_ns=550_000_002)
+    controller.on_frame(_frame(6, 10, 60), now_ns=550_000_002)
     controller.on_timer(now_ns=650_000_002)
-    exhausted = controller.on_frame(_frame(5, 10, 60), now_ns=650_000_003)
+    exhausted = controller.on_frame(_frame(7, 10, 60), now_ns=650_000_003)
 
     assert waiting.recovery_attempts == 1
     assert exhausted.status is NavigationStatus.STOPPED
@@ -278,11 +623,11 @@ def test_stuck_comes_from_visual_non_progress_and_recovery_is_bounded() -> None:
 
 def test_visual_progress_after_recovery_resumes_navigation() -> None:
     controller, actuator = _controller(stuck_after_ms=100)
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
     controller.on_timer(now_ns=100_000_000)
-    controller.on_frame(_frame(1, 10, 80), now_ns=100_000_001)
+    controller.on_frame(_frame(3, 10, 80), now_ns=100_000_001)
 
-    resumed = controller.on_frame(_frame(2, 10, 60), now_ns=120_000_000)
+    resumed = controller.on_frame(_frame(4, 10, 60), now_ns=120_000_000)
 
     assert resumed.status is NavigationStatus.NAVIGATING
     assert resumed.active_key == "w"
@@ -298,11 +643,11 @@ def test_recovery_releases_all_keys_and_does_not_repeat_edge_turn() -> None:
             ("B", "D"): RouteAction(key="w"),
         },
     )
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
     actuator.key_down("d", now_ns=1)
     controller.on_timer(now_ns=100_000_000)
 
-    recovering = controller.on_frame(_frame(1, 10, 80), now_ns=100_000_001)
+    recovering = controller.on_frame(_frame(3, 10, 80), now_ns=100_000_001)
 
     assert recovering.status is NavigationStatus.RECOVERING
     assert actuator.pressed_keys == frozenset({"s"})
@@ -315,14 +660,17 @@ def test_recovery_releases_all_keys_and_does_not_repeat_edge_turn() -> None:
 
 def test_route_advances_only_after_visual_waypoint_confirmation() -> None:
     controller, _ = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
     controller.on_timer(now_ns=100_000_000)
 
-    between = controller.on_frame(_frame(1, 10, 40), now_ns=110_000_000)
-    at_b = controller.on_frame(_frame(2, 10, 10), now_ns=220_000_000)
+    between = controller.on_frame(_frame(3, 10, 40), now_ns=110_000_000)
+    first_b = controller.on_frame(_frame(4, 10, 10), now_ns=220_000_000)
+    at_b = controller.on_frame(_frame(5, 10, 10), now_ns=230_000_000)
 
     assert between.current_node_id == "A"
     assert between.next_node_id == "B"
+    assert first_b.current_node_id == "A"
+    assert first_b.active_key is None
     assert at_b.current_node_id == "B"
     assert at_b.next_node_id == "D"
     assert at_b.active_key == "d"
@@ -330,13 +678,15 @@ def test_route_advances_only_after_visual_waypoint_confirmation() -> None:
 
 def test_goal_requires_consecutive_visual_confirmations_and_releases() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
-    controller.on_frame(_frame(1, 10, 10), now_ns=100_000_000)
+    _confirm_start(controller)
+    controller.on_frame(_frame(3, 10, 10), now_ns=100_000_000)
+    controller.on_frame(_frame(4, 10, 10), now_ns=110_000_000)
 
-    first = controller.on_frame(_frame(2, 80, 10), now_ns=200_000_000)
-    arrived = controller.on_frame(_frame(3, 80, 10), now_ns=250_000_000)
+    controller.on_frame(_frame(5, 80, 10), now_ns=200_000_000)
+    first = controller.on_frame(_frame(6, 80, 10), now_ns=210_000_000)
+    arrived = controller.on_frame(_frame(7, 80, 10), now_ns=250_000_000)
     event_count = len(actuator.events)
-    again = controller.on_frame(_frame(4, 80, 10), now_ns=300_000_000)
+    again = controller.on_frame(_frame(8, 80, 10), now_ns=300_000_000)
 
     assert first.status is NavigationStatus.NAVIGATING
     assert arrived.status is NavigationStatus.ARRIVED
@@ -347,11 +697,13 @@ def test_goal_requires_consecutive_visual_confirmations_and_releases() -> None:
 
 def test_unmapped_high_confidence_frame_after_goal_confirmation_stops_safely() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
-    controller.on_frame(_frame(1, 10, 10), now_ns=100_000_000)
-    first = controller.on_frame(_frame(2, 80, 10), now_ns=200_000_000)
+    _confirm_start(controller)
+    controller.on_frame(_frame(3, 10, 10), now_ns=100_000_000)
+    controller.on_frame(_frame(4, 10, 10), now_ns=110_000_000)
+    controller.on_frame(_frame(5, 80, 10), now_ns=200_000_000)
+    first = controller.on_frame(_frame(6, 80, 10), now_ns=210_000_000)
 
-    unmapped = controller.on_frame(_frame(3, 50, 50), now_ns=250_000_000)
+    unmapped = controller.on_frame(_frame(7, 50, 50), now_ns=250_000_000)
 
     assert first.status is NavigationStatus.NAVIGATING
     assert unmapped.status is NavigationStatus.STOPPED
@@ -362,9 +714,9 @@ def test_unmapped_high_confidence_frame_after_goal_confirmation_stops_safely() -
 
 def test_unmapped_high_confidence_frame_outside_active_edge_stops_and_releases() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
 
-    snapshot = controller.on_frame(_frame(1, 50, 50), now_ns=50_000_000)
+    snapshot = controller.on_frame(_frame(3, 50, 50), now_ns=50_000_000)
 
     assert snapshot.status is NavigationStatus.STOPPED
     assert "观察范围外" in (snapshot.reason or "")
@@ -390,7 +742,9 @@ def test_stale_frame_and_manual_stop_are_terminal_and_release_keys() -> None:
 def test_missing_edge_action_stops_before_sending_input() -> None:
     controller, actuator = _controller(edge_actions={})
 
-    snapshot = controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    controller.on_frame(_frame(1, 10, 80), now_ns=10_000_000)
+    snapshot = controller.on_frame(_frame(2, 10, 80), now_ns=20_000_000)
 
     assert snapshot.status is NavigationStatus.STOPPED
     assert "动作" in (snapshot.reason or "")
@@ -417,6 +771,9 @@ def test_ambiguous_initial_position_times_out_without_input() -> None:
         max_recovery_attempts=0,
         recovery_keys=(),
         arrival_confirmations=2,
+        initial_waypoint_confirmations=3,
+        waypoint_advance_confirmations=2,
+        relocalization_confirmations=3,
     )
     controller = VisualNavigationController(
         graph=graph,
@@ -447,9 +804,9 @@ def test_localizing_times_out_even_when_screenshot_stream_stops() -> None:
 
 def test_non_adjacent_visual_jump_stops_and_releases() -> None:
     controller, actuator = _controller()
-    controller.on_frame(_frame(0, 10, 80), now_ns=0)
+    _confirm_start(controller)
 
-    snapshot = controller.on_frame(_frame(1, 80, 80), now_ns=50_000_000)
+    snapshot = controller.on_frame(_frame(3, 80, 80), now_ns=50_000_000)
 
     assert snapshot.status is NavigationStatus.STOPPED
     assert "非相邻" in (snapshot.reason or "")
@@ -518,6 +875,9 @@ def test_template_navigation_uses_current_and_next_waypoints_as_match_candidates
             max_recovery_attempts=0,
             recovery_keys=(),
             arrival_confirmations=2,
+            initial_waypoint_confirmations=3,
+            waypoint_advance_confirmations=2,
+            relocalization_confirmations=3,
         ),
     )
 
@@ -525,23 +885,33 @@ def test_template_navigation_uses_current_and_next_waypoints_as_match_candidates
     first_image[40:52, 42:58] = current_template
     first_image.setflags(write=False)
     controller.on_frame(CapturedFrame(0, 1, first_image, "fixture"), now_ns=0)
+    controller.on_frame(CapturedFrame(1, 2, first_image, "fixture"), now_ns=1)
+    controller.on_frame(CapturedFrame(2, 3, first_image, "fixture"), now_ns=2)
 
     missing_image = np.zeros((100, 100, 3), dtype=np.uint8)
     missing_image.setflags(write=False)
     localizing = controller.on_frame(
-        CapturedFrame(1, 2, missing_image, "fixture"),
+        CapturedFrame(3, 4, missing_image, "fixture"),
         now_ns=50_000_000,
     )
 
     second_image = np.zeros((100, 100, 3), dtype=np.uint8)
     second_image[40:52, 42:58] = distant_template
     second_image.setflags(write=False)
-    snapshot = controller.on_frame(
-        CapturedFrame(2, 3, second_image, "fixture"),
+    controller.on_frame(
+        CapturedFrame(4, 5, second_image, "fixture"),
         now_ns=100_000_000,
     )
+    controller.on_frame(
+        CapturedFrame(5, 6, second_image, "fixture"),
+        now_ns=110_000_000,
+    )
+    snapshot = controller.on_frame(
+        CapturedFrame(6, 7, second_image, "fixture"),
+        now_ns=120_000_000,
+    )
 
-    assert localizing.status is NavigationStatus.LOCALIZING
+    assert localizing.status is NavigationStatus.RELOCALIZING
     assert snapshot.status is NavigationStatus.NAVIGATING
     assert snapshot.current_node_id == "A"
     assert snapshot.next_node_id == "B"
@@ -551,7 +921,7 @@ def test_template_navigation_uses_current_and_next_waypoints_as_match_candidates
     off_route_image[40:52, 42:58] = off_route_template
     off_route_image.setflags(write=False)
     stopped = controller.on_frame(
-        CapturedFrame(3, 4, off_route_image, "fixture"),
+        CapturedFrame(7, 8, off_route_image, "fixture"),
         now_ns=150_000_000,
     )
 
@@ -570,6 +940,12 @@ def test_template_navigation_uses_current_and_next_waypoints_as_match_candidates
         ("localization_timeout_ms", 0),
         ("max_recovery_attempts", -1),
         ("arrival_confirmations", 0),
+        ("initial_waypoint_confirmations", 2),
+        ("initial_waypoint_confirmations", True),
+        ("waypoint_advance_confirmations", 1),
+        ("waypoint_advance_confirmations", True),
+        ("relocalization_confirmations", 2),
+        ("relocalization_confirmations", True),
     ],
 )
 def test_navigation_policy_rejects_unsafe_values(field: str, value: int) -> None:
@@ -582,6 +958,9 @@ def test_navigation_policy_rejects_unsafe_values(field: str, value: int) -> None
         "max_recovery_attempts": 2,
         "recovery_keys": ("s",),
         "arrival_confirmations": 2,
+        "initial_waypoint_confirmations": 3,
+        "waypoint_advance_confirmations": 2,
+        "relocalization_confirmations": 3,
     }
     values[field] = value
 
@@ -600,6 +979,9 @@ def test_navigation_policy_requires_recovery_key_when_recovery_is_enabled() -> N
             max_recovery_attempts=1,
             recovery_keys=(),
             arrival_confirmations=2,
+            initial_waypoint_confirmations=3,
+            waypoint_advance_confirmations=2,
+            relocalization_confirmations=3,
         )
 
 

@@ -138,6 +138,9 @@ def _write_worker_config(path: Path, profile_path: Path) -> None:
                     "max_recovery_attempts": 0,
                     "recovery_keys": [],
                     "arrival_confirmations": 2,
+                    "initial_waypoint_confirmations": 3,
+                    "waypoint_advance_confirmations": 2,
+                    "relocalization_confirmations": 3,
                 },
             },
             ensure_ascii=False,
@@ -180,11 +183,21 @@ def test_calibration_evaluation_and_worker_replay_form_one_pipeline(tmp_path) ->
         matcher=MatcherConfiguration.default(),
     )
 
+    blind_specs = (
+        (0, 1, (0, 0), "start"),
+        (0, 2, (0, 0), "start"),
+        (0, 3, (0, 0), "start"),
+        (1, 4, (100, 0), "turn"),
+        (1, 5, (100, 0), "turn"),
+        (2, 6, (200, 0), "goal"),
+        (2, 7, (200, 0), "goal"),
+        (2, 8, (200, 0), "goal"),
+    )
     blind_images = [
-        _blind_variant(base_images[0], 1),
-        _blind_variant(base_images[1], 2),
-        _blind_variant(base_images[2], 3),
-        _blind_variant(base_images[2], 4),
+        *[
+            _blind_variant(base_images[image_index], seed)
+            for image_index, seed, _, _ in blind_specs
+        ],
         np.zeros_like(base_images[0]),
     ]
     blind_root = tmp_path / "blind"
@@ -195,8 +208,8 @@ def test_calibration_evaluation_and_worker_replay_form_one_pipeline(tmp_path) ->
         images=blind_images,
     )
     blind_labels = tmp_path / "blind-labels.jsonl"
-    positions = ((0, 0), (100, 0), (200, 0), (200, 0), None)
-    waypoint_ids = ("start", "turn", "goal", "goal", None)
+    positions = (*(spec[2] for spec in blind_specs), None)
+    waypoint_ids = (*(spec[3] for spec in blind_specs), None)
     _write_jsonl(
         blind_labels,
         [

@@ -48,9 +48,7 @@ def _frame(sequence: int, x: int, y: int) -> CapturedFrame:
 
 
 def _write_template_image(path: Path, seed: int) -> tuple[np.ndarray, str]:
-    image = np.random.default_rng(seed).integers(
-        0, 256, size=(12, 16, 3), dtype=np.uint8
-    )
+    image = np.random.default_rng(seed).integers(0, 256, size=(12, 16, 3), dtype=np.uint8)
     path.parent.mkdir(parents=True, exist_ok=True)
     assert cv2.imwrite(str(path), image)
     return image, hashlib.sha256(path.read_bytes()).hexdigest()
@@ -61,9 +59,7 @@ def _write_template_worker_fixture(
 ) -> tuple[Path, np.ndarray, np.ndarray]:
     config_root = tmp_path / "configs"
     profile_root = config_root / "route-01"
-    start_image, start_hash = _write_template_image(
-        profile_root / "start.png", 11
-    )
+    start_image, start_hash = _write_template_image(profile_root / "start.png", 11)
     goal_image, goal_hash = _write_template_image(profile_root / "goal.png", 12)
     dataset_digest = DatasetContentDigest()
     dataset_digest.update_hash(10, "1" * 64)
@@ -78,9 +74,7 @@ def _write_template_worker_fixture(
             "minimum_template_margin": 0.05,
             "nms_radius_px": 18,
         },
-        "rois": {
-            "scene": {"left": 0, "top": 0, "width": 180, "height": 120}
-        },
+        "rois": {"scene": {"left": 0, "top": 0, "width": 180, "height": 120}},
         "source_datasets": [
             {
                 "run_id": "calibration-run-01",
@@ -161,6 +155,9 @@ def _write_template_worker_fixture(
             "max_recovery_attempts": 0,
             "recovery_keys": [],
             "arrival_confirmations": 2,
+            "initial_waypoint_confirmations": 3,
+            "waypoint_advance_confirmations": 2,
+            "relocalization_confirmations": 3,
         },
     }
     config_path = config_root / "game-route.json"
@@ -173,6 +170,14 @@ def _template_frame(sequence: int, template: np.ndarray) -> CapturedFrame:
     image[40:52, 60:76] = template
     image.setflags(write=False)
     return CapturedFrame(sequence, 1_000 + sequence, image, "game-fixture")
+
+
+def _loop_clock(frame_times_ns: list[int], *, ended_at_ns: int | None = None):
+    values = [0]
+    for frame_time_ns in frame_times_ns:
+        values.extend((frame_time_ns, frame_time_ns))
+    values.append(ended_at_ns if ended_at_ns is not None else frame_times_ns[-1])
+    return iter(values)
 
 
 class FakeFrameSource:
@@ -324,12 +329,18 @@ def test_template_profile_drives_worker_controller_to_goal(tmp_path) -> None:
     controller = build_navigation_controller(settings, actuator=actuator)
 
     first = controller.on_frame(_template_frame(0, start_image), now_ns=0)
-    second = controller.on_frame(_template_frame(1, goal_image), now_ns=100_000_000)
-    third = controller.on_frame(_template_frame(2, goal_image), now_ns=200_000_000)
+    second = controller.on_frame(_template_frame(1, start_image), now_ns=10_000_000)
+    started = controller.on_frame(_template_frame(2, start_image), now_ns=20_000_000)
+    controller.on_frame(_template_frame(3, goal_image), now_ns=100_000_000)
+    controller.on_frame(_template_frame(4, goal_image), now_ns=110_000_000)
+    arrived = controller.on_frame(_template_frame(5, goal_image), now_ns=120_000_000)
 
-    assert first.status is NavigationStatus.NAVIGATING
-    assert second.status is NavigationStatus.NAVIGATING
-    assert third.status is NavigationStatus.ARRIVED
+    assert first.status is NavigationStatus.LOCALIZING
+    assert first.confirmation_count == 1
+    assert second.status is NavigationStatus.LOCALIZING
+    assert second.confirmation_count == 2
+    assert started.status is NavigationStatus.NAVIGATING
+    assert arrived.status is NavigationStatus.ARRIVED
     assert (actuator.events[0].kind, actuator.events[0].dx, actuator.events[0].dy) == (
         "mouse_move",
         320,
@@ -382,9 +393,7 @@ def test_load_worker_settings_rejects_unsafe_numeric_values(
 
 
 @pytest.mark.parametrize("value", [True, 1.5, 4097, -4097])
-def test_load_worker_settings_rejects_unsafe_relative_mouse_delta(
-    tmp_path, value
-) -> None:
+def test_load_worker_settings_rejects_unsafe_relative_mouse_delta(tmp_path, value) -> None:
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     config["edge_actions"][0]["mouse_dx"] = value
     path = tmp_path / "config.json"
@@ -406,24 +415,27 @@ def test_control_loop_reaches_goal_from_screenshot_frames_and_records_replay(
     source = FakeFrameSource(
         [
             _frame(0, 80, 520),
-            _frame(1, 80, 80),
-            _frame(2, 700, 80),
-            _frame(3, 700, 80),
+            _frame(1, 80, 520),
+            _frame(2, 80, 520),
+            _frame(3, 80, 80),
+            _frame(4, 80, 80),
+            _frame(5, 700, 80),
+            _frame(6, 700, 80),
+            _frame(7, 700, 80),
         ]
     )
-    clock = iter(
+    clock = _loop_clock(
         [
             0,
-            0,
-            0,
+            10_000_000,
+            20_000_000,
             100_000_000,
-            100_000_000,
+            110_000_000,
             200_000_000,
-            200_000_000,
-            250_000_000,
-            250_000_000,
-            300_000_000,
-        ]
+            210_000_000,
+            220_000_000,
+        ],
+        ended_at_ns=230_000_000,
     )
 
     result = run_control_loop(
@@ -439,21 +451,31 @@ def test_control_loop_reaches_goal_from_screenshot_frames_and_records_replay(
     )
 
     assert result.status is NavigationStatus.ARRIVED
-    assert result.frame_count == 4
+    assert result.frame_count == 8
     assert source.closed is True
     assert actuator.pressed_keys == frozenset()
-    assert len(list(ReplayFrameSource(tmp_path / "replay"))) == 4
+    assert len(list(ReplayFrameSource(tmp_path / "replay"))) == 8
     events = [
         json.loads(line)
         for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     frame_events = [event for event in events if event["event_type"] == "frame"]
     assert [event["payload"]["status"] for event in frame_events] == [
+        "localizing",
+        "localizing",
+        "navigating",
+        "navigating",
         "navigating",
         "navigating",
         "navigating",
         "arrived",
     ]
+    assert [event["payload"]["confirmation_count"] for event in frame_events[:3]] == [
+        1,
+        2,
+        0,
+    ]
+    assert frame_events[0]["payload"]["confirmation_required"] == 3
     assert frame_events[-1]["payload"]["pressed_keys"] == []
 
 
@@ -467,24 +489,16 @@ def test_control_loop_records_mouse_and_key_events_in_replay_and_event_log(
     source = FakeFrameSource(
         [
             _template_frame(0, start_image),
-            None,
-            _template_frame(1, goal_image),
-            _template_frame(2, goal_image),
+            _template_frame(1, start_image),
+            _template_frame(2, start_image),
+            _template_frame(3, goal_image),
+            _template_frame(4, goal_image),
+            _template_frame(5, goal_image),
         ]
     )
-    clock = iter(
-        [
-            0,
-            0,
-            0,
-            100_000_000,
-            100_000_000,
-            200_000_000,
-            200_000_000,
-            250_000_000,
-            250_000_000,
-            300_000_000,
-        ]
+    clock = _loop_clock(
+        [0, 10_000_000, 20_000_000, 100_000_000, 110_000_000, 120_000_000],
+        ended_at_ns=130_000_000,
     )
 
     result = run_control_loop(
@@ -501,14 +515,16 @@ def test_control_loop_records_mouse_and_key_events_in_replay_and_event_log(
 
     replayed = list(ReplayFrameSource(tmp_path / "replay"))
     assert result.status is NavigationStatus.ARRIVED
-    assert [event["kind"] for event in replayed[0].metadata["input_events"]] == [
+    assert replayed[0].metadata["input_events"] == ()
+    assert replayed[0].metadata["navigation"]["confirmation_count"] == 1
+    assert replayed[1].metadata["input_events"] == ()
+    assert replayed[1].metadata["navigation"]["confirmation_count"] == 2
+    assert [event["kind"] for event in replayed[2].metadata["input_events"]] == [
         "mouse_move",
         "key_down",
     ]
-    assert replayed[0].metadata["input_events"][0]["dx"] == 320
-    assert [event["kind"] for event in replayed[1].metadata["input_events"]] == [
-        "key_up"
-    ]
+    assert replayed[2].metadata["input_events"][0]["dx"] == 320
+    assert [event["kind"] for event in replayed[3].metadata["input_events"]] == ["key_up"]
     events = [
         json.loads(line)
         for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
@@ -532,8 +548,29 @@ def test_control_loop_persists_terminal_input_without_a_following_frame(tmp_path
         max_key_hold_ms=250,
     )
     controller = build_navigation_controller(settings, actuator=actuator)
-    source = FakeFrameSource([_frame(0, 80, 520), None])
-    clock = iter([0, 0, 0, 100_000_000, 100_000_000, 200_000_000, 300_000_000])
+    source = FakeFrameSource(
+        [
+            _frame(0, 80, 520),
+            _frame(1, 80, 520),
+            _frame(2, 80, 520),
+            None,
+        ]
+    )
+    clock = iter(
+        [
+            0,
+            0,
+            0,
+            10_000_000,
+            10_000_000,
+            20_000_000,
+            20_000_000,
+            100_000_000,
+            100_000_000,
+            200_000_000,
+            300_000_000,
+        ]
+    )
 
     result = run_control_loop(
         source=source,
@@ -566,34 +603,37 @@ def test_control_loop_refreshes_action_time_after_slow_capture_watchdog_release(
             super().__init__(
                 [
                     _frame(0, 80, 520),
-                    _frame(1, 80, 80),
-                    _frame(2, 700, 80),
-                    _frame(3, 700, 80),
+                    _frame(1, 80, 520),
+                    _frame(2, 80, 520),
+                    _frame(3, 80, 80),
+                    _frame(4, 80, 80),
+                    _frame(5, 700, 80),
+                    _frame(6, 700, 80),
+                    _frame(7, 700, 80),
                 ]
             )
             self.grab_count = 0
 
         def grab(self):
-            if self.grab_count == 1:
+            if self.grab_count == 3:
                 # 模拟截图阻塞期间 Win32 watchdog 使用真实较晚时钟释放旧按键。
                 actuator.expire_overdue(now_ns=300_000_000)
             self.grab_count += 1
             return super().grab()
 
     source = SlowFrameSource()
-    clock = iter(
+    clock = _loop_clock(
         [
-            0,
-            0,
             10_000_000,
-            50_000_000,
+            20_000_000,
+            30_000_000,
             350_000_000,
             400_000_000,
             410_000_000,
             450_000_000,
             460_000_000,
-            500_000_000,
-        ]
+        ],
+        ended_at_ns=500_000_000,
     )
 
     result = run_control_loop(
@@ -615,9 +655,7 @@ def test_control_loop_refreshes_action_time_after_slow_capture_watchdog_release(
         .splitlines()
     ]
     assert result.status is NavigationStatus.ARRIVED
-    assert [record["at_ns"] for record in records] == sorted(
-        record["at_ns"] for record in records
-    )
+    assert [record["at_ns"] for record in records] == sorted(record["at_ns"] for record in records)
 
 
 def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None:
@@ -640,24 +678,28 @@ def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None
     source = FakeFrameSource(
         [
             _frame(0, 80, 520),
-            _frame(1, 80, 80),
-            _frame(2, 700, 80),
-            _frame(3, 700, 80),
+            _frame(1, 80, 520),
+            _frame(2, 80, 520),
+            _frame(3, 80, 80),
+            _frame(4, 80, 80),
+            _frame(5, 700, 80),
+            _frame(6, 700, 80),
+            _frame(7, 700, 80),
         ]
     )
-    clock = iter(
-        [
-            0,
-            0,
-            0,
-            100_000_000,
-            100_000_000,
-            200_000_000,
-            200_000_000,
-            250_000_000,
-            250_000_000,
-            300_000_000,
-        ]
+    frame_times = [
+        0,
+        10_000_000,
+        20_000_000,
+        100_000_000,
+        110_000_000,
+        200_000_000,
+        210_000_000,
+        220_000_000,
+    ]
+    clock = _loop_clock(
+        frame_times,
+        ended_at_ns=230_000_000,
     )
 
     result = run_control_loop(
@@ -674,14 +716,7 @@ def test_control_loop_checks_overdue_keys_before_every_capture(tmp_path) -> None
 
     assert result.status is NavigationStatus.ARRIVED
     assert actuator.expiry_checks == [
-        0,
-        0,
-        100_000_000,
-        100_000_000,
-        200_000_000,
-        200_000_000,
-        250_000_000,
-        250_000_000,
+        frame_time_ns for frame_time_ns in frame_times for _ in range(2)
     ]
 
 
@@ -694,13 +729,31 @@ def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path)
     controller = build_navigation_controller(settings, actuator=actuator)
 
     class FailingSource(FakeFrameSource):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.sequence = 0
+
         def grab(self):
             if actuator.pressed_keys:
                 raise RuntimeError("capture failed")
-            return _frame(0, 80, 520)
+            frame = _frame(self.sequence, 80, 520)
+            self.sequence += 1
+            return frame
 
-    source = FailingSource([])
-    clock = iter([0, 0, 0, 10_000_000, 20_000_000])
+    source = FailingSource()
+    clock = iter(
+        [
+            0,
+            0,
+            0,
+            10_000_000,
+            10_000_000,
+            20_000_000,
+            20_000_000,
+            30_000_000,
+            40_000_000,
+        ]
+    )
 
     with pytest.raises(RuntimeError, match="capture failed"):
         run_control_loop(
@@ -727,7 +780,7 @@ def test_control_loop_closes_source_and_releases_keys_on_capture_error(tmp_path)
         "key_up",
     ]
     assert events[-1] == {
-        "at_ns": 20_000_000,
+        "at_ns": 40_000_000,
         "event_type": "runtime_error",
         "payload": {
             "error": "capture failed",
@@ -834,9 +887,7 @@ def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
     assert runtime.source is source
     assert runtime.target_window_handle == 123
     assert resolver_calls == ["dpi-aware-region", "window-handle"]
-    runtime.event_writer.write(
-        RuntimeEvent(event_type="frame", at_ns=1, payload={})
-    )
+    runtime.event_writer.write(RuntimeEvent(event_type="frame", at_ns=1, payload={}))
     event = json.loads((tmp_path / "events.jsonl").read_text(encoding="utf-8"))
     assert event["run_id"] == "worker-run"
 

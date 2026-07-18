@@ -52,6 +52,9 @@
     "localization_timeout_ms": 1200,
     "max_recovery_attempts": 2,
     "recovery_keys": ["s", "a"],
-    "arrival_confirmations": 3
+    "arrival_confirmations": 3,
+    "initial_waypoint_confirmations": 3,
+    "waypoint_advance_confirmations": 2,
+    "relocalization_confirmations": 3
   }
 }
