@@ -86,7 +86,7 @@ class SamplingResult:
     resolution: tuple[int, int]
 
 
-def _validate_run_id(run_id: object) -> str:
+def validate_run_id(run_id: object) -> str:
     if (
         not isinstance(run_id, str)
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id) is None
@@ -95,7 +95,7 @@ def _validate_run_id(run_id: object) -> str:
     return run_id
 
 
-def _validate_dataset_split(dataset_split: object) -> str:
+def validate_dataset_split(dataset_split: object) -> str:
     if dataset_split not in {"calibration", "validation", "blind"}:
         raise ValueError('dataset_split 必须是 "calibration"、"validation" 或 "blind"')
     return dataset_split
@@ -128,8 +128,8 @@ def sample_source(
     """按固定频率保存截图；此函数不导入或调用任何输入接口。"""
 
     try:
-        parsed_run_id = _validate_run_id(run_id)
-        parsed_dataset_split = _validate_dataset_split(dataset_split)
+        parsed_run_id = validate_run_id(run_id)
+        parsed_dataset_split = validate_dataset_split(dataset_split)
         if not isinstance(window_title, str) or not window_title.strip():
             raise ValueError("window_title 必须是非空字符串")
         if backend not in {"dxcam", "mss"}:

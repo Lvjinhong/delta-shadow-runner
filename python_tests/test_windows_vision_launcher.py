@@ -13,7 +13,7 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
     for fragment in (
         (
             '[ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", '
-            '"TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", '
+            '"SessionSample", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", '
             '"ControlledE2E", "Preflight")]'
         ),
         "winget.exe install --id astral-sh.uv -e",
@@ -28,6 +28,7 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "delta_vision.worker",
         "delta_vision.game_session",
         "delta_vision.sample_frames",
+        "delta_vision.session_sample",
         "delta_vision.calibrate_templates",
         '[ValidateSet("ncc", "orb", "sift")]',
         "--feature-backend $FeatureBackend",
@@ -72,10 +73,13 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
             'if ($Mode -eq "Armed")'
         )
     ]
-    assert "Enter-WorkerLock" not in session_block
+    assert "Enter-WorkerLock" in session_block
     assert "delta_vision.game_session" in session_block
     assert '"--armed"' in session_block
     assert "ReleaseMutex" in session_block
+    assert script.index('if ($Mode -eq "SessionArmed")') < script.index(
+        "New-Item -ItemType Directory -Path $Artifacts -Force"
+    )
 
     controlled_function = script[
         script.index("function Invoke-ControlledE2E") : script.index(
@@ -110,6 +114,19 @@ def test_game_route_cmd_defaults_to_dry_run_and_double_confirms_armed() -> None:
     assert "-Mode DryRun" in script
     assert "-Mode SessionArmed" in script
     assert "-ConfirmArmed" in script
+    assert "F12" in script
+
+
+def test_route_calibration_cmd_enters_match_then_samples_without_route_profile() -> None:
+    script = (PROJECT_ROOT / "start-route-calibration.cmd").read_text(
+        encoding="utf-8"
+    )
+
+    assert "profiles\\menu-zero-cost\\menu.json" in script
+    assert "choice /C YN" in script
+    assert "-Mode SessionSample" in script
+    assert "-ConfirmArmed" in script
+    assert "-Split calibration" in script
     assert "F12" in script
 
 

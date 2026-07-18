@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", "ControlledE2E", "Preflight")]
+    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "SessionSample", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", "ControlledE2E", "Preflight")]
     [string]$Mode = "DryRun",
 
     [string]$Config = "configs/controlled-window.json",
@@ -314,9 +314,51 @@ if ($Mode -eq "Evaluate") {
     exit $LASTEXITCODE
 }
 
+if ($Mode -eq "SessionSample") {
+    Assert-ArmedConfirmation
+    if (-not $ProfilePath) {
+        throw "SessionSample 必须提供 -ProfilePath（菜单 menu.json）。"
+    }
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.session_sample `
+            --menu-profile $ProfilePath `
+            --window-title $WindowTitle `
+            --backend $Backend `
+            --artifacts $Artifacts `
+            --run-id $effectiveRunId `
+            --split $Split `
+            --duration $Duration `
+            --fps $SampleFps `
+            "--armed"
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
+}
+
 $configPath = Join-Path $PSScriptRoot $Config
 if (-not (Test-Path -LiteralPath $configPath)) {
     throw "找不到 Worker 配置: $configPath"
+}
+
+if ($Mode -eq "SessionArmed") {
+    Assert-ArmedConfirmation
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.game_session `
+            --config $configPath --artifacts $Artifacts `
+            --run-id $effectiveRunId "--armed"
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
 }
 
 New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
@@ -356,20 +398,6 @@ if ($Mode -eq "DryRun") {
 
 Assert-ArmedConfirmation
 $workerMutex = Enter-WorkerLock
-
-if ($Mode -eq "SessionArmed") {
-    try {
-        & $uv run python -m delta_vision.game_session `
-            --config $configPath --artifacts $Artifacts `
-            --run-id $effectiveRunId "--armed"
-        $workerExitCode = $LASTEXITCODE
-    }
-    finally {
-        $workerMutex.ReleaseMutex()
-        $workerMutex.Dispose()
-    }
-    exit $workerExitCode
-}
 
 if ($Mode -eq "Armed") {
     try {

@@ -38,6 +38,7 @@ from .win32_native import (
 )
 
 SCAN_CODES = {
+    "tab": 0x0F,
     "w": 0x11,
     "a": 0x1E,
     "s": 0x1F,

@@ -122,3 +122,11 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 最终本机菜单包为 `output/windows-ready/menu-zero-cost-v3.zip`，44 MiB，SHA-256 `3b740125c29dafec1f6cf7356db9afa2d4f1137a271364a3bff6dab577e44230`；ZIP 完整性及解压后 Profile 重载通过，Profile 为 2560×1440、6 个来源 run、6 个场景模板。
 - 本机 Python 3.12.12 全量验证：687 项测试通过，总覆盖率 86.21%；Ruff、sdist/wheel build、`git diff --check` 和锁定运行时依赖 `pip-audit` 通过；打包器历经三轮独立故障注入复审后最终 APPROVE。
 - `game_session --validate-only` 已越过菜单包加载，并按预期停在缺失 `profiles/route-01/templates.json`。这说明大厅菜单数据已可交付，但局内路线 Profile 仍未采集，不能据此宣称跑图 E2E 或准确率。
+
+[2026-07-19 基线切换：1920×1080 与进图即采样]
+- 用户明确把产品拆成两层：外层必须循环完成主页/地图选择/零成本出发/赛后回大厅/背包与保险箱清理，内层才负责零号大坝固定路线；当前开发顺序改为先完成外层循环。
+- 新增 `SessionSample`：只依赖菜单 Profile，不依赖尚未生成的路线 Profile；菜单必须以 `COMPLETED + IN_MATCH` 终态结束，随后立即释放菜单输入并以同一个 run_id 启动只读人工路线采样。菜单失败、错误终态或采样失败都会写原子摘要。
+- 菜单运行参数从路线 Worker 抽为 `WindowsMenuSettings`；状态模型增加 `BASE`，按键白名单增加 `tab`，菜单结果记录真实 `terminal_scene`。`start-route-calibration.cmd` 仍要求人工确认和 F12 急停。
+- 本机全量验证：698 项测试通过，总覆盖率 86.06%；Ruff、sdist/wheel build 与 `git diff --check` 通过。
+- 2026-07-19 只读实测确认游戏客户区已改为 1920×1080 窗口模式；2 秒 MSS 采样 4/4 帧、无缺帧。旧 2560×1440 菜单包和全部模板/ROI/坐标从此视为过期，不能缩放复用。
+- 当前 1080p 画面停在视频设置页；尚未在 1080p 基线上发送菜单输入，也尚未采集主页、仓库、保险箱、赛后和 HUD 的完整 Profile，相关真实循环与路线准确率继续视为未完成。

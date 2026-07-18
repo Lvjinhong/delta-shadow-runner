@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Protocol
 
 from .actuator import DryRunActuator
+from .artifact_io import write_atomic_json
 from .capture import DxcamFrameSource, MssFrameSource
 from .config import CaptureRegion
 from .events import JsonlEventWriter
@@ -50,6 +51,40 @@ class GameSessionStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class WindowsMenuSettings:
+    """只包含菜单识别和受保护输入所需的 Windows 运行参数。"""
+
+    target_window_title: str
+    capture_backend: str
+    emergency_virtual_key: int
+    max_key_hold_ms: int
+    menu_profile: LoadedMenuProfile
+    loop_interval_ms: int
+    max_duration_seconds: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.target_window_title, str) or not self.target_window_title:
+            raise ValueError("目标窗口标题必须是非空字符串")
+        if self.capture_backend not in {"dxcam", "mss"}:
+            raise ValueError('截图后端必须是 "dxcam" 或 "mss"')
+        if type(self.emergency_virtual_key) is not int or not (
+            0 <= self.emergency_virtual_key <= 255
+        ):
+            raise ValueError("急停虚拟键必须是 0 到 255 的整数")
+        if type(self.max_key_hold_ms) is not int or self.max_key_hold_ms <= 0:
+            raise ValueError("最大按键保持时间必须是正整数毫秒")
+        if type(self.loop_interval_ms) is not int or self.loop_interval_ms <= 0:
+            raise ValueError("菜单循环间隔必须是正整数毫秒")
+        if (
+            isinstance(self.max_duration_seconds, bool)
+            or not isinstance(self.max_duration_seconds, (int, float))
+            or not math.isfinite(self.max_duration_seconds)
+            or self.max_duration_seconds <= 0
+        ):
+            raise ValueError("菜单最大运行时长必须是正有限数")
+
+
+@dataclass(frozen=True, slots=True)
 class GameSessionSettings:
     worker: WorkerSettings
     menu_profile: LoadedMenuProfile
@@ -57,22 +92,16 @@ class GameSessionSettings:
     menu_max_duration_seconds: float
 
     def __post_init__(self) -> None:
-        if type(self.menu_loop_interval_ms) is not int or self.menu_loop_interval_ms <= 0:
-            raise ValueError("menu.loop_interval_ms 必须是正整数")
-        if (
-            isinstance(self.menu_max_duration_seconds, bool)
-            or not isinstance(self.menu_max_duration_seconds, (int, float))
-            or not math.isfinite(self.menu_max_duration_seconds)
-            or self.menu_max_duration_seconds <= 0
-        ):
-            raise ValueError("menu.max_duration_seconds 必须是正有限数")
+        self.menu_runtime_settings()
         transitions = self.menu_profile.transitions
         if (
             not transitions
-            or transitions[0].source is not MenuScene.LOBBY
+            or transitions[0].source not in {MenuScene.BASE, MenuScene.LOBBY}
             or transitions[-1].target is not MenuScene.IN_MATCH
         ):
-            raise ValueError("全会话菜单流程必须从 LOBBY 连续确认到 IN_MATCH")
+            raise ValueError(
+                "全会话菜单流程必须从 BASE 或 LOBBY 连续确认到 IN_MATCH"
+            )
         menu_keys = {
             transition.key
             for transition in transitions
@@ -87,6 +116,17 @@ class GameSessionSettings:
             )
         if self.worker.perception.frame_size != self.menu_profile.frame_size:
             raise ValueError("菜单与局内路线 Profile 的期望分辨率必须一致")
+
+    def menu_runtime_settings(self) -> WindowsMenuSettings:
+        return WindowsMenuSettings(
+            target_window_title=self.worker.target_window_title,
+            capture_backend=self.worker.capture_backend,
+            emergency_virtual_key=self.worker.emergency_virtual_key,
+            max_key_hold_ms=self.worker.max_key_hold_ms,
+            menu_profile=self.menu_profile,
+            loop_interval_ms=self.menu_loop_interval_ms,
+            max_duration_seconds=self.menu_max_duration_seconds,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,20 +209,34 @@ def load_game_session_settings(
     )
 
 
-def _allowed_keys(settings: GameSessionSettings) -> set[str]:
-    route_keys = {
-        action.key for action in settings.worker.policy.edge_actions.values()
-    } | set(settings.worker.policy.recovery_keys)
+def _menu_settings(
+    settings: GameSessionSettings | WindowsMenuSettings,
+) -> WindowsMenuSettings:
+    if isinstance(settings, GameSessionSettings):
+        return settings.menu_runtime_settings()
+    return settings
+
+
+def _allowed_keys(settings: GameSessionSettings | WindowsMenuSettings) -> set[str]:
+    route_keys = (
+        {
+            action.key for action in settings.worker.policy.edge_actions.values()
+        }
+        | set(settings.worker.policy.recovery_keys)
+        if isinstance(settings, GameSessionSettings)
+        else set()
+    )
+    menu_settings = _menu_settings(settings)
     menu_keys = {
         transition.key
-        for transition in settings.menu_profile.transitions
+        for transition in menu_settings.menu_profile.transitions
         if transition.action_kind is MenuActionKind.KEY and transition.key is not None
     }
     return route_keys | menu_keys
 
 
 def build_windows_menu_runtime(
-    settings: GameSessionSettings,
+    settings: GameSessionSettings | WindowsMenuSettings,
     *,
     artifacts: str | Path,
     armed: bool,
@@ -193,50 +247,51 @@ def build_windows_menu_runtime(
     mss_factory: Callable[[CaptureRegion], _FrameSource] = MssFrameSource,
     gateway_factory: Callable[[], Win32NativeGateway] = Win32NativeGateway,
 ) -> WindowsMenuRuntime:
-    if armed and not settings.worker.armed_ready:
+    if armed and isinstance(settings, GameSessionSettings) and not settings.worker.armed_ready:
         raise ValueError("全会话 armed 被配置 armed_ready=false 阻止")
+    menu_settings = _menu_settings(settings)
     allowed_keys = _allowed_keys(settings)
     unsupported_keys = allowed_keys - SCAN_CODES.keys()
     if unsupported_keys:
         raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
-    region = region_resolver(settings.worker.target_window_title)
-    expected_width, expected_height = settings.menu_profile.frame_size
+    region = region_resolver(menu_settings.target_window_title)
+    expected_width, expected_height = menu_settings.menu_profile.frame_size
     if (region.width, region.height) != (expected_width, expected_height):
         raise ValueError(
             "菜单 Profile 分辨率与目标窗口客户区不一致: "
             f"expected={expected_width}x{expected_height}, "
             f"actual={region.width}x{region.height}"
         )
-    target_window_handle = window_handle_resolver(settings.worker.target_window_title)
+    target_window_handle = window_handle_resolver(menu_settings.target_window_title)
     source_factory = (
-        dxcam_factory if settings.worker.capture_backend == "dxcam" else mss_factory
+        dxcam_factory if menu_settings.capture_backend == "dxcam" else mss_factory
     )
     source = source_factory(region)
     try:
         if armed:
             gateway = gateway_factory()
             gate = SafetyGate(
-                target_window_title=settings.worker.target_window_title,
+                target_window_title=menu_settings.target_window_title,
                 target_window_handle=target_window_handle,
-                emergency_virtual_key=settings.worker.emergency_virtual_key,
+                emergency_virtual_key=menu_settings.emergency_virtual_key,
                 gateway=gateway,
             )
             actuator: DryRunActuator | Win32InputActuator = Win32InputActuator(
                 scan_codes={key: SCAN_CODES[key] for key in allowed_keys},
-                max_key_hold_ms=settings.worker.max_key_hold_ms,
+                max_key_hold_ms=menu_settings.max_key_hold_ms,
                 gate=gate,
                 gateway=gateway,
             )
         else:
             actuator = DryRunActuator(
                 allowed_keys=allowed_keys,
-                max_key_hold_ms=settings.worker.max_key_hold_ms,
+                max_key_hold_ms=menu_settings.max_key_hold_ms,
             )
         artifact_root = Path(artifacts)
         return WindowsMenuRuntime(
             source=source,
-            observer=settings.menu_profile.observer,
-            controller=settings.menu_profile.create_controller(),
+            observer=menu_settings.menu_profile.observer,
+            controller=menu_settings.menu_profile.create_controller(),
             executor=MenuActionExecutor(
                 actuator=actuator,
                 capture_region=region,
@@ -256,12 +311,13 @@ def build_windows_menu_runtime(
 
 
 def run_windows_menu(
-    settings: GameSessionSettings,
+    settings: GameSessionSettings | WindowsMenuSettings,
     *,
     artifacts: str | Path,
     armed: bool,
     run_id: str | None = None,
 ) -> MenuLoopResult:
+    menu_settings = _menu_settings(settings)
     runtime = build_windows_menu_runtime(
         settings,
         artifacts=artifacts,
@@ -276,14 +332,15 @@ def run_windows_menu(
         actuator=runtime.actuator,
         recorder=runtime.recorder,
         event_writer=runtime.event_writer,
-        loop_interval_ms=settings.menu_loop_interval_ms,
-        max_duration_seconds=settings.menu_max_duration_seconds,
+        loop_interval_ms=menu_settings.loop_interval_ms,
+        max_duration_seconds=menu_settings.max_duration_seconds,
     )
 
 
 def _menu_payload(result: MenuLoopResult) -> dict[str, object]:
     return {
         "status": str(result.status),
+        "terminal_scene": str(result.terminal_scene),
         "frame_count": result.frame_count,
         "action_count": result.action_count,
         "duration_ns": result.duration_ns,
@@ -302,22 +359,6 @@ def _route_payload(result: ControlLoopResult | None) -> dict[str, object] | None
     }
 
 
-def _write_summary(path: Path, payload: Mapping[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(
-            payload,
-            allow_nan=False,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-
-
 def _write_failure_summary(
     *,
     path: Path,
@@ -328,7 +369,7 @@ def _write_failure_summary(
     menu_result: MenuLoopResult | None,
 ) -> None:
     try:
-        _write_summary(
+        write_atomic_json(
             path,
             {
                 "schema_version": 1,
@@ -365,7 +406,10 @@ def run_game_session(
     if armed and not settings.worker.armed_ready:
         raise ValueError("全会话 armed 被配置 armed_ready=false 阻止")
     artifact_root = Path(artifacts)
-    artifact_root.mkdir(parents=True, exist_ok=True)
+    try:
+        artifact_root.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as error:
+        raise FileExistsError(f"运行目录已经存在，拒绝覆盖: {artifact_root}") from error
     summary_path = artifact_root / "session-summary.json"
     try:
         menu_result = menu_runner(
@@ -390,7 +434,7 @@ def run_game_session(
             menu=menu_result,
             route=None,
         )
-        _write_summary(
+        write_atomic_json(
             summary_path,
             {
                 "schema_version": 1,
@@ -426,7 +470,7 @@ def run_game_session(
         else GameSessionStatus.ROUTE_STOPPED
     )
     result = GameSessionResult(status=status, menu=menu_result, route=route_result)
-    _write_summary(
+    write_atomic_json(
         summary_path,
         {
             "schema_version": 1,

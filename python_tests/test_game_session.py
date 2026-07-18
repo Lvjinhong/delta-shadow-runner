@@ -199,6 +199,26 @@ def test_session_settings_requires_lobby_to_in_match_flow(transitions) -> None:
         _settings(transitions=transitions)
 
 
+def test_session_settings_accepts_current_base_to_lobby_to_in_match_flow() -> None:
+    transitions = (
+        MenuTransition(
+            MenuScene.BASE,
+            MenuScene.LOBBY,
+            MenuActionKind.KEY,
+            key="tab",
+        ),
+        MenuTransition(
+            MenuScene.LOBBY,
+            MenuScene.IN_MATCH,
+            MenuActionKind.CLICK,
+        ),
+    )
+
+    settings = _settings(transitions=transitions)
+
+    assert settings.menu_profile.transitions == transitions
+
+
 def test_session_settings_rejects_unsupported_menu_key() -> None:
     transitions = (
         MenuTransition(
@@ -283,10 +303,11 @@ def test_armed_session_is_blocked_before_any_runner_when_not_ready(tmp_path) -> 
 
 def test_session_never_starts_route_when_menu_did_not_complete(tmp_path) -> None:
     route_calls = []
+    artifacts = tmp_path / "run"
 
     result = run_game_session(
         _settings(),
-        artifacts=tmp_path,
+        artifacts=artifacts,
         armed=True,
         run_id="shared-run",
         menu_runner=lambda **_kwargs: MenuLoopResult(
@@ -302,7 +323,9 @@ def test_session_never_starts_route_when_menu_did_not_complete(tmp_path) -> None
     assert result.status is GameSessionStatus.MENU_STOPPED
     assert result.route is None
     assert route_calls == []
-    summary = json.loads((tmp_path / "session-summary.json").read_text(encoding="utf-8"))
+    summary = json.loads(
+        (artifacts / "session-summary.json").read_text(encoding="utf-8")
+    )
     assert summary["status"] == "menu_stopped"
     assert summary["run_id"] == "shared-run"
     assert summary["route"] is None
@@ -310,6 +333,7 @@ def test_session_never_starts_route_when_menu_did_not_complete(tmp_path) -> None
 
 def test_session_starts_route_once_after_confirmed_in_match(tmp_path) -> None:
     calls = []
+    artifacts = tmp_path / "run"
 
     def menu_runner(**kwargs):
         calls.append(("menu", kwargs))
@@ -332,7 +356,7 @@ def test_session_starts_route_once_after_confirmed_in_match(tmp_path) -> None:
 
     result = run_game_session(
         _settings(),
-        artifacts=tmp_path,
+        artifacts=artifacts,
         armed=True,
         run_id="shared-run",
         menu_runner=menu_runner,
@@ -341,15 +365,18 @@ def test_session_starts_route_once_after_confirmed_in_match(tmp_path) -> None:
 
     assert result.status is GameSessionStatus.COMPLETED
     assert [name for name, _kwargs in calls] == ["menu", "route"]
-    assert calls[0][1]["artifacts"] == tmp_path / "menu"
-    assert calls[1][1]["artifacts"] == tmp_path / "route"
+    assert calls[0][1]["artifacts"] == artifacts / "menu"
+    assert calls[1][1]["artifacts"] == artifacts / "route"
     assert calls[0][1]["run_id"] == calls[1][1]["run_id"] == "shared-run"
-    summary = json.loads((tmp_path / "session-summary.json").read_text(encoding="utf-8"))
+    summary = json.loads(
+        (artifacts / "session-summary.json").read_text(encoding="utf-8")
+    )
     assert summary["status"] == "completed"
     assert summary["route"]["status"] == "arrived"
 
 
 def test_route_exception_keeps_menu_evidence_and_writes_failed_summary(tmp_path) -> None:
+    artifacts = tmp_path / "run"
     menu_result = MenuLoopResult(
         status=MenuControllerStatus.COMPLETED,
         frame_count=6,
@@ -361,7 +388,7 @@ def test_route_exception_keeps_menu_evidence_and_writes_failed_summary(tmp_path)
     with pytest.raises(RuntimeError, match="route failed"):
         run_game_session(
             _settings(),
-            artifacts=tmp_path,
+            artifacts=artifacts,
             armed=False,
             run_id="failed-run",
             menu_runner=lambda **_kwargs: menu_result,
@@ -370,9 +397,31 @@ def test_route_exception_keeps_menu_evidence_and_writes_failed_summary(tmp_path)
             ),
         )
 
-    summary = json.loads((tmp_path / "session-summary.json").read_text(encoding="utf-8"))
+    summary = json.loads(
+        (artifacts / "session-summary.json").read_text(encoding="utf-8")
+    )
     assert summary["status"] == "failed"
     assert summary["failed_phase"] == "route"
     assert summary["menu"]["status"] == "completed"
     assert summary["route"] is None
     assert summary["error"]["exception_type"] == "RuntimeError"
+
+
+def test_game_session_rejects_existing_artifact_root_before_menu(tmp_path) -> None:
+    artifacts = tmp_path / "existing"
+    artifacts.mkdir()
+    (artifacts / "owned.txt").write_text("keep", encoding="utf-8")
+    menu_calls = []
+
+    with pytest.raises(FileExistsError, match="运行目录已经存在"):
+        run_game_session(
+            _settings(),
+            artifacts=artifacts,
+            armed=False,
+            run_id="existing-run",
+            menu_runner=lambda **kwargs: menu_calls.append(kwargs),
+            route_runner=lambda *_args, **_kwargs: None,
+        )
+
+    assert menu_calls == []
+    assert (artifacts / "owned.txt").read_text(encoding="utf-8") == "keep"

@@ -17,6 +17,7 @@ class MenuScene(StrEnum):
     """零成本进图流程涉及的最小页面集合。"""
 
     UNKNOWN = "unknown"
+    BASE = "base"
     LOBBY = "lobby"
     STRATEGY_BOARD = "strategy_board"
     ZERO_DAM_READY = "zero_dam_ready"

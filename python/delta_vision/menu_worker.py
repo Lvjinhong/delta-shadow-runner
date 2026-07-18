@@ -13,6 +13,7 @@ from .frames import CapturedFrame, FrameRecorder
 from .menu_automation import (
     MenuControllerSnapshot,
     MenuControllerStatus,
+    MenuScene,
     SceneObservation,
 )
 from .menu_runtime import MenuActionExecutor, MenuExecutionRecord
@@ -59,6 +60,7 @@ class MenuLoopResult:
     action_count: int
     duration_ns: int
     reason: str | None
+    terminal_scene: MenuScene = MenuScene.UNKNOWN
 
 
 def _execution_payload(record: MenuExecutionRecord | None) -> dict[str, object] | None:
@@ -207,6 +209,7 @@ def run_menu_control_loop(
             action_count=action_count,
             duration_ns=max(0, ended_at_ns - started_at_ns),
             reason=snapshot.reason,
+            terminal_scene=snapshot.observed_scene,
         )
         source.close()
     except BaseException as error:
