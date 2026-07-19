@@ -5,6 +5,43 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
+
+from .frames import CapturedFrame
+from .menu_automation import MenuActionKind, MenuScene, MenuTransition, SceneObservation
+
+WAREHOUSE_BASE_TEMPLATE_ID = "warehouse-cleanup-base"
+WAREHOUSE_EMPTY_TEMPLATE_ID = "warehouse-cleanup-empty-0-of-2"
+WAREHOUSE_EMPTY_EVIDENCE_IDS = frozenset(
+    {
+        "safe-box-count-zero-of-two",
+        "safe-box-slot-zero-empty",
+        "safe-box-slot-one-empty",
+    }
+)
+
+
+class _MenuProfileProvenance(Protocol):
+    template_id: str
+    scene: MenuScene
+    page_content_sha256: str
+    action_content_sha256: str | None
+    action_sha256: str | None
+    evidence_ids: tuple[str, ...]
+    evidence_sha256: tuple[str, ...]
+    evidence_content_sha256: tuple[str, ...]
+
+
+class _MenuProfileObserver(Protocol):
+    def observe(self, frame: CapturedFrame) -> SceneObservation: ...
+
+
+class _WarehouseMenuProfile(Protocol):
+    frame_size: tuple[int, int]
+    observer: _MenuProfileObserver
+    template_provenance: tuple[_MenuProfileProvenance, ...]
+    transitions: tuple[MenuTransition, ...]
+    stop_scenes: frozenset[MenuScene]
 
 
 class WarehouseScene(StrEnum):
@@ -145,6 +182,127 @@ class WarehouseObservation:
             for point in points
         ):
             raise ValueError("动作位置必须位于截图范围内")
+
+
+class MenuProfileWarehouseObserver:
+    """把专用菜单 Profile 的严格页面结果映射为仓库清理观察。"""
+
+    def __init__(
+        self,
+        *,
+        menu_profile: _WarehouseMenuProfile,
+    ) -> None:
+        if getattr(menu_profile, "frame_size", None) != (1920, 1080):
+            raise ValueError("仓库清理 Profile 必须固定为 1920x1080")
+        provenance = getattr(menu_profile, "template_provenance", ())
+        if not isinstance(provenance, tuple):
+            raise ValueError("仓库清理 Profile 缺少模板来源")
+        if len(provenance) != 2:
+            raise ValueError(
+                "仓库清理 Profile 必须恰好包含一个 BASE 模板和一个空保险箱模板"
+            )
+        provenance_by_id = {item.template_id: item for item in provenance}
+        if set(provenance_by_id) != {
+            WAREHOUSE_BASE_TEMPLATE_ID,
+            WAREHOUSE_EMPTY_TEMPLATE_ID,
+        }:
+            raise ValueError("仓库清理 Profile 缺少唯一的空保险箱模板")
+        base = provenance_by_id[WAREHOUSE_BASE_TEMPLATE_ID]
+        empty = provenance_by_id[WAREHOUSE_EMPTY_TEMPLATE_ID]
+        if base.scene is not MenuScene.BASE or empty.scene is not MenuScene.WAREHOUSE:
+            raise ValueError("仓库清理 Profile 的模板页面不一致")
+        if base.evidence_ids:
+            raise ValueError("仓库 BASE 模板不能携带空保险箱证据")
+        if (
+            len(empty.evidence_ids) != len(WAREHOUSE_EMPTY_EVIDENCE_IDS)
+            or frozenset(empty.evidence_ids) != WAREHOUSE_EMPTY_EVIDENCE_IDS
+            or len(empty.evidence_sha256) != len(empty.evidence_ids)
+            or len(empty.evidence_content_sha256) != len(empty.evidence_ids)
+        ):
+            raise ValueError("空保险箱模板必须包含计数和两个独立空格证据")
+        if any(
+            not isinstance(item.action_sha256, str)
+            or not item.action_sha256
+            or not isinstance(item.action_content_sha256, str)
+            or not item.action_content_sha256
+            or item.action_content_sha256 == item.page_content_sha256
+            for item in provenance
+        ):
+            raise ValueError("仓库清理 Profile 的页面与独立动作来源无效")
+        expected_transitions = (
+            MenuTransition(
+                source=MenuScene.BASE,
+                target=MenuScene.WAREHOUSE,
+                action_kind=MenuActionKind.CLICK,
+            ),
+            MenuTransition(
+                source=MenuScene.WAREHOUSE,
+                target=MenuScene.BASE,
+                action_kind=MenuActionKind.CLICK,
+            ),
+        )
+        if getattr(menu_profile, "transitions", None) != expected_transitions:
+            raise ValueError("仓库清理 Profile 的转换必须为 BASE→WAREHOUSE→BASE")
+        if getattr(menu_profile, "stop_scenes", None) != frozenset():
+            raise ValueError("仓库清理 Profile 不能配置提前停止页面")
+        observer = getattr(menu_profile, "observer", None)
+        if observer is None or not callable(getattr(observer, "observe", None)):
+            raise ValueError("仓库清理 Profile 缺少页面观察器")
+        self._profile = menu_profile
+
+    @staticmethod
+    def _unknown(frame: CapturedFrame) -> WarehouseObservation:
+        return WarehouseObservation(
+            frame_sequence=frame.sequence,
+            captured_at_ns=frame.captured_at_ns,
+            frame_size=(int(frame.image.shape[1]), int(frame.image.shape[0])),
+            scene=WarehouseScene.UNKNOWN,
+            accepted=False,
+        )
+
+    def observe(self, frame: CapturedFrame) -> WarehouseObservation:
+        if not isinstance(frame, CapturedFrame):
+            raise TypeError("frame 必须是 CapturedFrame")
+        frame_size = (int(frame.image.shape[1]), int(frame.image.shape[0]))
+        if frame_size != self._profile.frame_size:
+            return self._unknown(frame)
+        source = self._profile.observer.observe(frame)
+        if (
+            source.frame_sequence != frame.sequence
+            or source.captured_at_ns != frame.captured_at_ns
+            or not source.accepted
+            or not source.action_accepted
+            or source.action_point is None
+            or source.page_template_id is None
+        ):
+            return self._unknown(frame)
+        if (
+            source.scene is MenuScene.BASE
+            and source.page_template_id == WAREHOUSE_BASE_TEMPLATE_ID
+        ):
+            return WarehouseObservation(
+                frame_sequence=frame.sequence,
+                captured_at_ns=frame.captured_at_ns,
+                frame_size=frame_size,
+                scene=WarehouseScene.BASE,
+                accepted=True,
+                open_warehouse_point=source.action_point,
+            )
+        if (
+            source.scene is MenuScene.WAREHOUSE
+            and source.page_template_id == WAREHOUSE_EMPTY_TEMPLATE_ID
+        ):
+            return WarehouseObservation(
+                frame_sequence=frame.sequence,
+                captured_at_ns=frame.captured_at_ns,
+                frame_size=frame_size,
+                scene=WarehouseScene.WAREHOUSE,
+                accepted=True,
+                safe_box_count=0,
+                slots=(SafeSlotState.EMPTY, SafeSlotState.EMPTY),
+                return_base_point=source.action_point,
+            )
+        return self._unknown(frame)
 
 
 @dataclass(frozen=True, slots=True)

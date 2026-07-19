@@ -1,0 +1,169 @@
+{
+  "schema_version": 2,
+  "profile_id": "warehouse-empty-1080p-v1",
+  "expected_frame_size": [
+    1920,
+    1080
+  ],
+  "minimum_scene_margin": 0.07,
+  "detector_defaults": {
+    "scales": [
+      1.0
+    ],
+    "score_threshold": 0.93,
+    "minimum_margin": 0.06,
+    "nms_radius_px": 24
+  },
+  "controller": {
+    "confirmation_frames": 3,
+    "maximum_confirmation_span_ms": 750,
+    "maximum_action_point_drift_px": 8,
+    "maximum_page_point_drift_px": 8,
+    "maximum_frame_age_ms": 250,
+    "transition_timeout_ms": 8000
+  },
+  "templates": [
+    {
+      "template_id": "warehouse-cleanup-base",
+      "scene": "base",
+      "source_run_id": "homepage-windowed-1080p-home-clean-20260719-01",
+      "source_sequence": 0,
+      "page": {
+        "crop": {
+          "left": 1460,
+          "top": 800,
+          "width": 370,
+          "height": 140
+        },
+        "search_roi": {
+          "left": 1400,
+          "top": 740,
+          "width": 480,
+          "height": 220
+        }
+      },
+      "action": {
+        "crop": {
+          "left": 285,
+          "top": 38,
+          "width": 75,
+          "height": 34
+        },
+        "search_roi": {
+          "left": 250,
+          "top": 25,
+          "width": 140,
+          "height": 60
+        },
+        "action_region": {
+          "left": 258,
+          "top": 31,
+          "width": 130,
+          "height": 48
+        }
+      }
+    },
+    {
+      "template_id": "warehouse-cleanup-empty-0-of-2",
+      "scene": "warehouse",
+      "source_run_id": "warehouse-empty-1080p-20260719-01",
+      "source_sequence": 0,
+      "page": {
+        "crop": {
+          "left": 670,
+          "top": 100,
+          "width": 460,
+          "height": 220
+        },
+        "search_roi": {
+          "left": 640,
+          "top": 90,
+          "width": 500,
+          "height": 240
+        }
+      },
+      "evidence": [
+        {
+          "evidence_id": "safe-box-count-zero-of-two",
+          "crop": {
+            "left": 735,
+            "top": 805,
+            "width": 70,
+            "height": 38
+          },
+          "search_roi": {
+            "left": 730,
+            "top": 800,
+            "width": 80,
+            "height": 48
+          }
+        },
+        {
+          "evidence_id": "safe-box-slot-zero-empty",
+          "crop": {
+            "left": 805,
+            "top": 847,
+            "width": 65,
+            "height": 66
+          },
+          "search_roi": {
+            "left": 800,
+            "top": 842,
+            "width": 75,
+            "height": 76
+          }
+        },
+        {
+          "evidence_id": "safe-box-slot-one-empty",
+          "crop": {
+            "left": 870,
+            "top": 847,
+            "width": 65,
+            "height": 66
+          },
+          "search_roi": {
+            "left": 865,
+            "top": 842,
+            "width": 75,
+            "height": 76
+          }
+        }
+      ],
+      "action": {
+        "crop": {
+          "left": 145,
+          "top": 38,
+          "width": 95,
+          "height": 34
+        },
+        "search_roi": {
+          "left": 125,
+          "top": 25,
+          "width": 145,
+          "height": 60
+        },
+        "action_region": {
+          "left": 127,
+          "top": 31,
+          "width": 131,
+          "height": 48
+        }
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "source": "base",
+      "target": "warehouse",
+      "action_kind": "click",
+      "key": null
+    },
+    {
+      "source": "warehouse",
+      "target": "base",
+      "action_kind": "click",
+      "key": null
+    }
+  ],
+  "stop_scenes": []
+}

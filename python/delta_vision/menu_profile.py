@@ -113,6 +113,9 @@ class MenuTemplateProvenance:
     action_sha256: str | None
     page_content_sha256: str
     action_content_sha256: str | None
+    evidence_ids: tuple[str, ...] = ()
+    evidence_sha256: tuple[str, ...] = ()
+    evidence_content_sha256: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +479,7 @@ class _MenuProfileLoader:
     def _templates(
         self,
         *,
+        schema_version: int,
         frame_size: tuple[int, int],
         source_runs: Mapping[str, _VerifiedSourceRun],
     ) -> tuple[tuple[MenuSceneTemplate, ...], tuple[MenuTemplateProvenance, ...]]:
@@ -531,6 +535,33 @@ class _MenuProfileLoader:
                     frame_size=frame_size,
                 )
             )
+            raw_evidence = raw.get("evidence", [])
+            if not isinstance(raw_evidence, list):
+                raise ValueError(f"{field}.evidence 必须是数组")
+            if schema_version == 1 and raw_evidence:
+                raise ValueError("evidence 必须使用 menu profile schema_version 2")
+            evidence_ids: list[str] = []
+            evidence: list[_LoadedDetector] = []
+            for evidence_index, evidence_item in enumerate(raw_evidence):
+                evidence_field = f"{field}.evidence[{evidence_index}]"
+                evidence_raw = _mapping(evidence_item, field=evidence_field)
+                if set(evidence_raw) != {"evidence_id", "detector"}:
+                    raise ValueError(f"{evidence_field} 字段不完整或包含未知字段")
+                evidence_id = _string(
+                    evidence_raw.get("evidence_id"),
+                    field=f"{evidence_field}.evidence_id",
+                )
+                if evidence_id in evidence_ids:
+                    raise ValueError(f"{field}.evidence_id 不能重复")
+                evidence_ids.append(evidence_id)
+                evidence.append(
+                    self._detector(
+                        evidence_raw.get("detector"),
+                        field=f"{evidence_field}.detector",
+                        label=f"{template_id}:evidence:{evidence_id}",
+                        frame_size=frame_size,
+                    )
+                )
             action_region = (
                 None
                 if raw_action_region is None
@@ -543,6 +574,12 @@ class _MenuProfileLoader:
                 raise ValueError(f"{field}.action_region 超出 expected_frame_size")
             if action is not None and action.content_sha256 == page.content_sha256:
                 raise ValueError(f"{field} 的页面锚点和动作锚点必须使用独立图像")
+            content_hashes = [page.content_sha256]
+            if action is not None:
+                content_hashes.append(action.content_sha256)
+            content_hashes.extend(item.content_sha256 for item in evidence)
+            if len(set(content_hashes)) != len(content_hashes):
+                raise ValueError(f"{field} 的页面、动作和附加证据必须使用独立图像")
             if action is not None and action_region is not None and not (
                 action.search_roi.left <= action_region.left
                 and action.search_roi.top <= action_region.top
@@ -558,6 +595,7 @@ class _MenuProfileLoader:
                     page_detector=page.detector,
                     action_detector=None if action is None else action.detector,
                     action_region=action_region,
+                    evidence_detectors=tuple(item.detector for item in evidence),
                 )
             )
             provenance.append(
@@ -572,6 +610,11 @@ class _MenuProfileLoader:
                     page_content_sha256=page.content_sha256,
                     action_content_sha256=(
                         None if action is None else action.content_sha256
+                    ),
+                    evidence_ids=tuple(evidence_ids),
+                    evidence_sha256=tuple(item.sha256 for item in evidence),
+                    evidence_content_sha256=tuple(
+                        item.content_sha256 for item in evidence
                     ),
                 )
             )
@@ -624,15 +667,20 @@ class _MenuProfileLoader:
 
     def load(self) -> LoadedMenuProfile:
         schema_version = self._raw.get("schema_version")
-        if type(schema_version) is not int or schema_version != 1:
+        if type(schema_version) is not int or schema_version not in {1, 2}:
             raise ValueError("不支持的 menu profile schema_version")
         profile_id = _string(self._raw.get("profile_id"), field="profile_id")
         frame_size = self._frame_size()
         source_run_ids, source_runs = self._source_runs(frame_size=frame_size)
         templates, template_provenance = self._templates(
+            schema_version=schema_version,
             frame_size=frame_size,
             source_runs=source_runs,
         )
+        if schema_version == 2 and not any(
+            item.evidence_ids for item in template_provenance
+        ):
+            raise ValueError("menu profile schema_version 2 必须包含 evidence")
         transitions = self._transitions(templates)
         raw_stop_scenes = self._raw.get("stop_scenes")
         if not isinstance(raw_stop_scenes, list):

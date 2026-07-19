@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import pytest
 
-from delta_vision.frames import DatasetContentDigest
+from delta_vision.frames import CapturedFrame, DatasetContentDigest
 from delta_vision.generate_menu_profile import generate_menu_profile
 from delta_vision.menu_automation import MenuScene
 from delta_vision.menu_profile import load_menu_profile
@@ -188,6 +188,76 @@ def test_generate_menu_profile_builds_loadable_multi_dataset_bundle(
     raw_profile = json.loads(result.profile_path.read_text(encoding="utf-8"))
     base_run = next(item for item in raw_profile["source_runs"] if item["run_id"] == "base-cal")
     assert base_run["dataset_content_sha256"] == digest.hexdigest()
+
+
+def test_generated_profile_requires_every_packaged_evidence_anchor(
+    tmp_path: Path,
+) -> None:
+    base, base_image = _write_dataset(tmp_path, run_id="base-cal", seed=1)
+    match, _ = _write_dataset(tmp_path, run_id="match-cal", seed=2)
+    post, _ = _write_dataset(tmp_path, run_id="post-cal", seed=3)
+    spec = _spec()
+    spec["schema_version"] = 2
+    spec["templates"][0]["evidence"] = [
+        {
+            "evidence_id": "base-secondary-marker",
+            "crop": _region(200, 200, 40, 40),
+            "search_roi": _region(180, 180, 100, 100),
+        }
+    ]
+
+    result = generate_menu_profile(
+        spec_path=_write_spec(tmp_path / "spec.json", spec),
+        dataset_directories=[post, base, match],
+        output_directory=tmp_path / "menu-profile",
+    )
+    loaded = load_menu_profile(result.profile_path)
+    accepted = loaded.observer.observe(
+        CapturedFrame(0, 100_000_000, base_image, "evidence-positive")
+    )
+    missing_image = np.array(base_image, copy=True)
+    missing_image[200:240, 200:240] = 0
+    rejected = loaded.observer.observe(
+        CapturedFrame(1, 200_000_000, missing_image, "evidence-negative")
+    )
+
+    assert result.template_asset_count == 5
+    assert (
+        tmp_path
+        / "menu-profile/templates/base-start-evidence-base-secondary-marker.png"
+    ).is_file()
+    assert loaded.template_provenance[0].evidence_ids == (
+        "base-secondary-marker",
+    )
+    assert accepted.scene is MenuScene.BASE
+    assert accepted.accepted is True
+    assert rejected.scene is MenuScene.UNKNOWN
+    assert rejected.accepted is False
+
+
+def test_generate_menu_profile_rejects_evidence_in_schema_v1(
+    tmp_path: Path,
+) -> None:
+    base, _ = _write_dataset(tmp_path, run_id="base-cal", seed=1)
+    match, _ = _write_dataset(tmp_path, run_id="match-cal", seed=2)
+    post, _ = _write_dataset(tmp_path, run_id="post-cal", seed=3)
+    spec = _spec()
+    spec["templates"][0]["evidence"] = [
+        {
+            "evidence_id": "base-secondary-marker",
+            "crop": _region(200, 200, 40, 40),
+            "search_roi": _region(180, 180, 100, 100),
+        }
+    ]
+
+    with pytest.raises(ValueError, match=r"evidence.*schema_version 2"):
+        generate_menu_profile(
+            spec_path=_write_spec(tmp_path / "spec.json", spec),
+            dataset_directories=[post, base, match],
+            output_directory=tmp_path / "menu-profile",
+        )
+
+    assert not (tmp_path / "menu-profile").exists()
 
 
 def test_generate_menu_profile_rejects_non_1080p_dataset_before_output(

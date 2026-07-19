@@ -685,6 +685,31 @@ def test_menu_profile_rejects_same_page_and_action_image_content(
         load_menu_profile(path)
 
 
+def test_menu_profile_rejects_evidence_in_schema_v1(tmp_path: Path) -> None:
+    path, _, _ = _write_profile(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["templates"][0]["evidence"] = [
+        {
+            "evidence_id": "unsafe-downgrade-marker",
+            "detector": raw["templates"][0]["page"],
+        }
+    ]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"evidence.*schema_version 2"):
+        load_menu_profile(path)
+
+
+def test_menu_profile_rejects_schema_v2_without_evidence(tmp_path: Path) -> None:
+    path, _, _ = _write_profile(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["schema_version"] = 2
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"schema_version 2.*evidence"):
+        load_menu_profile(path)
+
+
 def test_menu_profile_rejects_same_decoded_anchor_pixels_with_different_png(
     tmp_path: Path,
 ) -> None:

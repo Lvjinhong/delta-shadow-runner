@@ -202,6 +202,47 @@ def test_template_scene_observer_recognizes_scene_and_click_point() -> None:
     assert observation.action_point == (814.0, 610.0)
 
 
+def test_template_scene_observer_requires_every_evidence_anchor() -> None:
+    page = _pattern(201)
+    action = _pattern(202)
+    evidence = _pattern(203)
+    observer = TemplateMenuSceneObserver(
+        templates=(
+            MenuSceneTemplate(
+                template_id="warehouse-empty",
+                scene=MenuScene.WAREHOUSE,
+                page_detector=_detector("warehouse-page", page),
+                action_detector=_detector("warehouse-return", action),
+                action_region=ACTION_REGION,
+                evidence_detectors=(_detector("safe-box-zero", evidence),),
+            ),
+        ),
+        expected_frame_size=FRAME_SIZE,
+        minimum_scene_margin=0.08,
+    )
+    complete_source = _frame(1, (page, action))
+    complete_image = np.array(complete_source.image, copy=True)
+    complete_image[300:320, 400:428] = evidence
+    complete_image.setflags(write=False)
+    complete = CapturedFrame(
+        sequence=complete_source.sequence,
+        captured_at_ns=complete_source.captured_at_ns,
+        image=complete_image,
+        source=complete_source.source,
+    )
+    missing = _frame(2, (page, action))
+
+    accepted = observer.observe(complete)
+    rejected = observer.observe(missing)
+
+    assert accepted.scene is MenuScene.WAREHOUSE
+    assert accepted.accepted is True
+    assert accepted.action_accepted is True
+    assert rejected.scene is MenuScene.UNKNOWN
+    assert rejected.accepted is False
+    assert rejected.reason is SceneDecisionReason.BELOW_THRESHOLD
+
+
 def test_template_scene_observer_rejects_cross_scene_ambiguity() -> None:
     observer, patterns = _observer(duplicate_scene_template=True)
 

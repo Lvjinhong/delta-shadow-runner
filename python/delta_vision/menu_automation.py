@@ -18,6 +18,7 @@ class MenuScene(StrEnum):
 
     UNKNOWN = "unknown"
     BASE = "base"
+    WAREHOUSE = "warehouse"
     LOBBY = "lobby"
     STRATEGY_BOARD = "strategy_board"
     ZERO_DAM_READY = "zero_dam_ready"
@@ -54,6 +55,7 @@ class MenuSceneTemplate:
     page_detector: TemplateAnchorDetector
     action_detector: TemplateAnchorDetector | None
     action_region: CaptureRegion | None
+    evidence_detectors: tuple[TemplateAnchorDetector, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.template_id:
@@ -66,6 +68,21 @@ class MenuSceneTemplate:
             raise ValueError("动作模板必须配置显式动作区域")
         if self.action_detector is not None and self.page_detector is self.action_detector:
             raise ValueError("页面锚点和动作锚点必须独立")
+        if not isinstance(self.evidence_detectors, tuple) or any(
+            not isinstance(detector, TemplateAnchorDetector)
+            for detector in self.evidence_detectors
+        ):
+            raise ValueError("页面附加证据必须是模板检测器元组")
+        detector_ids = tuple(
+            id(detector)
+            for detector in (
+                self.page_detector,
+                *self.evidence_detectors,
+                *((self.action_detector,) if self.action_detector is not None else ()),
+            )
+        )
+        if len(set(detector_ids)) != len(detector_ids):
+            raise ValueError("页面、动作和附加证据检测器必须相互独立")
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +275,35 @@ class TemplateMenuSceneObserver:
             page_template_id=page_template_id,
         )
 
+    @staticmethod
+    def _page_match(
+        template: MenuSceneTemplate,
+        frame: CapturedFrame,
+    ) -> TemplateMatchObservation:
+        page = template.page_detector.detect(frame.image)
+        if not template.evidence_detectors:
+            return page
+        evidence = tuple(
+            detector.detect(frame.image) for detector in template.evidence_detectors
+        )
+        matches = (page, *evidence)
+        failed = next((match for match in matches if not match.accepted), None)
+        return TemplateMatchObservation(
+            label=f"{template.template_id}:required-evidence",
+            confidence=min(match.confidence for match in matches),
+            runner_up_confidence=max(
+                match.runner_up_confidence for match in matches
+            ),
+            bbox=page.bbox if failed is None else None,
+            centroid=page.centroid if failed is None else None,
+            scale=page.scale if failed is None else None,
+            candidate_bbox=page.candidate_bbox,
+            candidate_centroid=page.candidate_centroid,
+            candidate_scale=page.candidate_scale,
+            accepted=failed is None,
+            reason="accepted" if failed is None else failed.reason,
+        )
+
     def observe(self, frame: CapturedFrame) -> SceneObservation:
         actual_size = (int(frame.image.shape[1]), int(frame.image.shape[0]))
         if actual_size != self._expected_frame_size:
@@ -267,7 +313,7 @@ class TemplateMenuSceneObserver:
             )
 
         matches = tuple(
-            _PageCandidate(template, template.page_detector.detect(frame.image))
+            _PageCandidate(template, self._page_match(template, frame))
             for template in self._templates
         )
         best_by_scene: dict[MenuScene, _PageCandidate] = {}

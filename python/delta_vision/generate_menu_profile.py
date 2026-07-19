@@ -367,7 +367,7 @@ def _build_templates(
         field = f"templates[{index}]"
         raw = _mapping(value, field=field)
         required = {"template_id", "scene", "source_run_id", "source_sequence", "page"}
-        allowed = required | {"action"}
+        allowed = required | {"action", "evidence"}
         if not required <= set(raw) or not set(raw) <= allowed:
             raise ValueError(f"{field} 字段不完整或包含未知字段")
         template_id = validate_run_id(raw["template_id"])
@@ -396,6 +396,7 @@ def _build_templates(
         action_raw = raw.get("action")
         action: dict[str, object] | None = None
         action_region: dict[str, int] | None = None
+        action_crop: _Region | None = None
         if action_raw is not None:
             action_ref = f"templates/{template_id}-action.png"
             action, parsed_region, action_crop = _build_action(
@@ -406,16 +407,55 @@ def _build_templates(
                 asset_path=root / action_ref,
                 asset_reference=action_ref,
             )
-            if page_crop == action_crop or frame_content_sha256(
-                frame[page_crop.top : page_crop.bottom, page_crop.left : page_crop.right]
-            ) == frame_content_sha256(
-                frame[
-                    action_crop.top : action_crop.bottom,
-                    action_crop.left : action_crop.right,
-                ]
-            ):
-                raise ValueError(f"{field} 的 page 与 action 必须使用独立图像")
             action_region = parsed_region.as_dict()
+        raw_evidence = raw.get("evidence", [])
+        if not isinstance(raw_evidence, list):
+            raise ValueError(f"{field}.evidence 必须是数组")
+        evidence: list[dict[str, object]] = []
+        evidence_crops: list[_Region] = []
+        evidence_ids: set[str] = set()
+        for evidence_index, evidence_item in enumerate(raw_evidence):
+            evidence_field = f"{field}.evidence[{evidence_index}]"
+            evidence_raw = _mapping(evidence_item, field=evidence_field)
+            _exact_keys(
+                evidence_raw,
+                {"evidence_id", "crop", "search_roi"},
+                field=evidence_field,
+            )
+            evidence_id = validate_run_id(evidence_raw["evidence_id"])
+            if evidence_id in evidence_ids:
+                raise ValueError(f"{field}.evidence_id 不能重复")
+            evidence_ids.add(evidence_id)
+            evidence_ref = f"templates/{template_id}-evidence-{evidence_id}.png"
+            detector, evidence_crop = _build_detector(
+                {
+                    "crop": evidence_raw["crop"],
+                    "search_roi": evidence_raw["search_roi"],
+                },
+                field=evidence_field,
+                frame=frame,
+                defaults=defaults,
+                asset_path=root / evidence_ref,
+                asset_reference=evidence_ref,
+            )
+            evidence.append(
+                {
+                    "evidence_id": evidence_id,
+                    "detector": detector,
+                }
+            )
+            evidence_crops.append(evidence_crop)
+        detector_crops = [page_crop, *evidence_crops]
+        if action_crop is not None:
+            detector_crops.append(action_crop)
+        detector_content_hashes = [
+            frame_content_sha256(
+                frame[crop.top : crop.bottom, crop.left : crop.right]
+            )
+            for crop in detector_crops
+        ]
+        if len(set(detector_content_hashes)) != len(detector_content_hashes):
+            raise ValueError(f"{field} 的页面、动作和附加证据必须使用独立图像")
         scene = raw["scene"]
         if not isinstance(scene, str) or not scene:
             raise ValueError(f"{field}.scene 必须是非空字符串")
@@ -429,6 +469,7 @@ def _build_templates(
                 "page": page,
                 "action": action,
                 "action_region": action_region,
+                "evidence": evidence,
             }
         )
         used_runs.add(run_id)
@@ -525,8 +566,20 @@ def _load_spec(path: Path) -> dict[str, Any]:
         },
         field="菜单 Profile spec",
     )
-    if spec["schema_version"] != 1:
+    schema_version = spec["schema_version"]
+    if type(schema_version) is not int or schema_version not in {1, 2}:
         raise ValueError("不支持的 spec schema_version")
+    raw_templates = spec["templates"]
+    if not isinstance(raw_templates, list) or not raw_templates:
+        raise ValueError("templates 必须是非空数组")
+    has_evidence = any(
+        bool(_mapping(item, field=f"templates[{index}]").get("evidence"))
+        for index, item in enumerate(raw_templates)
+    )
+    if schema_version == 1 and has_evidence:
+        raise ValueError("evidence 必须使用 spec schema_version 2")
+    if schema_version == 2 and not has_evidence:
+        raise ValueError("spec schema_version 2 必须包含 evidence")
     validate_run_id(spec["profile_id"])
     if spec["expected_frame_size"] != list(_FRAME_SIZE):
         raise ValueError("expected_frame_size 必须固定为 [1920, 1080]")

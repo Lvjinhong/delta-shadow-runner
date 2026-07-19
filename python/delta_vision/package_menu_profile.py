@@ -230,6 +230,24 @@ def materialize_menu_profile(
                         field=f"templates[{index}].{detector_name}.image",
                     )
                 )
+            evidence = template.get("evidence", [])
+            if not isinstance(evidence, list):
+                raise ValueError(f"templates[{index}].evidence 必须是数组")
+            for evidence_index, evidence_item in enumerate(evidence):
+                evidence_field = f"templates[{index}].evidence[{evidence_index}]"
+                evidence_raw = _mapping(evidence_item, field=evidence_field)
+                detector = _mapping(
+                    evidence_raw.get("detector"),
+                    field=f"{evidence_field}.detector",
+                )
+                copied_assets.add(
+                    _copy_file(
+                        source_root=source_root,
+                        staging=staging,
+                        reference=detector.get("image"),
+                        field=f"{evidence_field}.detector.image",
+                    )
+                )
 
         bundled_profile = staging / "menu.json"
         bundled_profile.write_bytes(profile_path.read_bytes())

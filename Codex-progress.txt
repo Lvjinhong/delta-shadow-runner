@@ -139,3 +139,14 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - cleanup 证据区分 `cleanup_started` 与 `cleanup_completed`；抓帧和截图源关闭同时失败时保留原始安全错误并附加关闭错误，不让次要异常遮蔽根因。
 - 本机 Python 3.12.12 全量验证：720 项测试通过，总覆盖率 85.81%；本次改动 Ruff、sdist/wheel build 与 `git diff --check` 通过；独立 code-reviewer 最终无 finding，结论 APPROVE。
 - 仍未完成：1080p 正式菜单 Profile bundle、仓库/保险箱清理 hook、局内 HUD/出生点 blind 数据、零号大坝固定路线和真实完整跑刀成功率。
+
+[2026-07-19 仓库空保险箱识别与无输入 DryRun]
+- 菜单视觉模型新增 `WAREHOUSE` 场景和必需附加证据；页面模板只有在页面锚点与全部 evidence 同时通过时才会被接受，任一证据缺失都会返回 `UNKNOWN`。
+- 菜单 Profile schema v2 专用于 evidence 配置：v1 拒绝非空 evidence，v2 必须至少包含一组 evidence；旧 v1 无 evidence Profile 保持兼容，防止旧读取器静默忽略安全字段。
+- 仓库专用观察器只接受恰好两个固定模板和 `BASE → WAREHOUSE → BASE` 拓扑；空保险箱必须同时具备 `0/2` 计数、0 号空格、1 号空格三个固定且内容独立的 evidence。任何模板 ID、来源哈希、动作锚点或拓扑缺失都 fail-closed。
+- 新增无操作系统输入的仓库 Worker 与 `DryRunCleanupExecutor`：动作过期或重复会拒绝，输出只记录本地/屏幕坐标；资源关闭采用 at-most-once 语义，`close()` 抛错也不会再次调用。
+- 真实 1920×1080 calibration 数据生成 schema v2 Profile：`output/windows-ready/warehouse-empty-1080p-v3/menu.json`，2 个页面模板、2 个动作模板、3 个 evidence 资产，Profile SHA-256 `238ea1d17ec00be2dd98c0e282bb8c4c763b0cf80bbdaf43d337c09b316a9832`。
+- 真实帧离线回放完成 9 帧、2 个 DryRun 动作，确认 `safe_box_count=0`、截图源关闭且没有输入事件文件；事件 SHA-256 `3b9a8c90a2b5dd8a72397ce9c4cb916b611b09b7241e8b9d49c4677834915028`。记录坐标为本地 `(322,55)/(192,55)`、屏幕 `(642,211)/(512,211)`，仅是回放证据，未发送真实游戏输入。
+- 像素扰动复核：真实空仓原图接受；分别改变 `0/2` 计数、0 号格 30×30、1 号格 30×30 后均返回 `UNKNOWN`。这只能证明所构造反例被拒绝，不能替代独立 blind 集准确率。
+- 本机 Python 3.12.12 全量验证：775 项测试通过，总覆盖率 85.13%；Ruff、sdist/wheel build 与 `git diff --check` 通过。独立 code-reviewer 复跑全量和定向测试，最终无 CRITICAL/HIGH/MEDIUM finding。
+- Windows `192.168.3.7` 当前 SSH/TCP 22 超时，尚未同步本提交，也未执行仓库真实点击；外部循环 live E2E、局内出生 blind 数据、零号大坝固定路线、20/20、F12 急停和真实完整循环仍未完成，相关 feature `passes` 继续保持 false。
