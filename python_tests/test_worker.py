@@ -862,7 +862,8 @@ def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
     source = FakeFrameSource([])
     resolver_calls = []
 
-    def resolve_region(_: str) -> CaptureRegion:
+    def resolve_region(window_handle: int) -> CaptureRegion:
+        assert window_handle == 123
         resolver_calls.append("dpi-aware-region")
         return CaptureRegion(0, 0, 800, 600)
 
@@ -886,7 +887,7 @@ def test_build_windows_runtime_defaults_to_dry_run(tmp_path) -> None:
     assert isinstance(runtime.actuator, DryRunActuator)
     assert runtime.source is source
     assert runtime.target_window_handle == 123
-    assert resolver_calls == ["dpi-aware-region", "window-handle"]
+    assert resolver_calls == ["window-handle", "dpi-aware-region"]
     runtime.event_writer.write(RuntimeEvent(event_type="frame", at_ns=1, payload={}))
     event = json.loads((tmp_path / "events.jsonl").read_text(encoding="utf-8"))
     assert event["run_id"] == "worker-run"
@@ -903,9 +904,7 @@ def test_build_windows_runtime_rejects_template_profile_resolution_mismatch(
             settings,
             artifacts=tmp_path / "artifacts",
             armed=False,
-            window_handle_resolver=lambda _: (_ for _ in ()).throw(
-                AssertionError("分辨率不匹配时不应解析 HWND")
-            ),
+            window_handle_resolver=lambda _: 123,
             region_resolver=lambda _: CaptureRegion(0, 0, 800, 600),
             dxcam_factory=lambda _: (_ for _ in ()).throw(
                 AssertionError("分辨率不匹配时不应创建截图 backend")
@@ -941,7 +940,11 @@ def test_build_windows_runtime_armed_uses_bound_win32_safety_gate(tmp_path) -> N
         artifacts=tmp_path,
         armed=True,
         window_handle_resolver=lambda _: 123,
-        region_resolver=lambda _: CaptureRegion(0, 0, 800, 600),
+        region_resolver=lambda handle: (
+            CaptureRegion(0, 0, 800, 600)
+            if handle == 123
+            else (_ for _ in ()).throw(AssertionError("客户区必须使用绑定 HWND"))
+        ),
         dxcam_factory=lambda region: source,
         gateway_factory=lambda: gateway,
     )

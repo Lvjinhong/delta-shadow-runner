@@ -125,6 +125,34 @@ def test_win32_actuator_taps_key_with_fresh_intent_and_releases() -> None:
     assert actuator.events[-1].reason == "按键点击完成"
 
 
+def test_win32_actuator_supports_mouse_only_without_scan_codes() -> None:
+    gateway = FakeGateway()
+    gate = SafetyGate(
+        target_window_title="Delta Vision Test Target",
+        target_window_handle=123,
+        emergency_virtual_key=0x7B,
+        gateway=gateway,
+    )
+    actuator = Win32InputActuator(
+        scan_codes={},
+        max_key_hold_ms=250,
+        gate=gate,
+        gateway=gateway,
+        clock_ns=lambda: 150,
+        timer_factory=FakeTimerFactory(),
+    )
+
+    actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert gateway.sent == [
+        ("mouse_absolute", 500, 600),
+        ("mouse_left", False),
+        ("mouse_left", True),
+    ]
+    with pytest.raises(ValueError, match="不允许的按键"):
+        actuator.key_down("w", now_ns=151)
+
+
 def test_win32_actuator_rejects_expired_key_tap_without_input() -> None:
     gateway = FakeGateway()
     actuator = _actuator(gateway, clock_ns=lambda: 201)

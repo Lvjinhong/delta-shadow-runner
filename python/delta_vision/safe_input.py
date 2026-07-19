@@ -123,8 +123,6 @@ class Win32InputActuator:
         clock_ns: Callable[[], int] = time.monotonic_ns,
         timer_factory: Callable[[float, Callable[[], None]], TimerHandle] = _daemon_timer,
     ) -> None:
-        if not scan_codes:
-            raise ValueError("scan code 映射不能为空")
         if isinstance(max_key_hold_ms, bool) or max_key_hold_ms <= 0:
             raise ValueError("最大按键时长必须为正数")
         self._scan_codes = dict(scan_codes)

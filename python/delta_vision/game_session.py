@@ -27,7 +27,11 @@ from .menu_worker import MenuLoopResult, run_menu_control_loop
 from .navigation import NavigationStatus
 from .safe_input import SafetyGate, Win32InputActuator
 from .template_profile import TemplateProfile
-from .win32_native import Win32NativeGateway, find_window_handle, window_client_region
+from .win32_native import (
+    Win32NativeGateway,
+    find_window_handle,
+    window_client_region_for_handle,
+)
 from .worker import (
     SCAN_CODES,
     ControlLoopResult,
@@ -242,7 +246,7 @@ def build_windows_menu_runtime(
     armed: bool,
     run_id: str | None = None,
     window_handle_resolver: Callable[[str], int] = find_window_handle,
-    region_resolver: Callable[[str], CaptureRegion] = window_client_region,
+    region_resolver: Callable[[int], CaptureRegion] = window_client_region_for_handle,
     dxcam_factory: Callable[[CaptureRegion], _FrameSource] = DxcamFrameSource,
     mss_factory: Callable[[CaptureRegion], _FrameSource] = MssFrameSource,
     gateway_factory: Callable[[], Win32NativeGateway] = Win32NativeGateway,
@@ -254,7 +258,8 @@ def build_windows_menu_runtime(
     unsupported_keys = allowed_keys - SCAN_CODES.keys()
     if unsupported_keys:
         raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
-    region = region_resolver(menu_settings.target_window_title)
+    target_window_handle = window_handle_resolver(menu_settings.target_window_title)
+    region = region_resolver(target_window_handle)
     expected_width, expected_height = menu_settings.menu_profile.frame_size
     if (region.width, region.height) != (expected_width, expected_height):
         raise ValueError(
@@ -262,7 +267,6 @@ def build_windows_menu_runtime(
             f"expected={expected_width}x{expected_height}, "
             f"actual={region.width}x{region.height}"
         )
-    target_window_handle = window_handle_resolver(menu_settings.target_window_title)
     source_factory = (
         dxcam_factory if menu_settings.capture_backend == "dxcam" else mss_factory
     )

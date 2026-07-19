@@ -418,20 +418,7 @@ class Win32NativeGateway:
         return self._send_mouse(dx=0, dy=0, flags=flags)
 
 
-def window_client_region(
-    window_title: str,
-    *,
-    user32: Any | None = None,
-    wtsapi32: Any | None = None,
-) -> CaptureRegion:
-    """把指定顶层窗口的客户区转换成桌面像素坐标。"""
-
-    native = user32 or _load_user32()
-    ensure_capture_ready_desktop(user32=native, wtsapi32=wtsapi32)
-    if user32 is None:
-        enable_per_monitor_dpi_awareness(user32=native)
-    window_handle = find_window_handle(window_title, user32=native)
-
+def _client_region_from_handle(native: Any, window_handle: int) -> CaptureRegion:
     rect = RECT()
     if not native.GetClientRect(window_handle, ctypes.byref(rect)):
         raise OSError(_last_error(), "GetClientRect 失败")
@@ -441,6 +428,39 @@ def window_client_region(
     width = int(rect.right - rect.left)
     height = int(rect.bottom - rect.top)
     return CaptureRegion(int(origin.x), int(origin.y), width, height)
+
+
+def window_client_region_for_handle(
+    window_handle: int,
+    *,
+    user32: Any | None = None,
+    wtsapi32: Any | None = None,
+) -> CaptureRegion:
+    """从已绑定的精确 HWND 获取客户区，禁止再次按标题解析窗口。"""
+
+    if type(window_handle) is not int or window_handle <= 0:
+        raise ValueError("窗口句柄必须是正整数")
+    native = user32 or _load_user32()
+    ensure_capture_ready_desktop(user32=native, wtsapi32=wtsapi32)
+    if user32 is None:
+        enable_per_monitor_dpi_awareness(user32=native)
+    return _client_region_from_handle(native, window_handle)
+
+
+def window_client_region(
+    window_title: str,
+    *,
+    user32: Any | None = None,
+    wtsapi32: Any | None = None,
+) -> CaptureRegion:
+    """按标题解析一次顶层窗口，再读取该精确 HWND 的客户区。"""
+
+    native = user32 or _load_user32()
+    ensure_capture_ready_desktop(user32=native, wtsapi32=wtsapi32)
+    if user32 is None:
+        enable_per_monitor_dpi_awareness(user32=native)
+    window_handle = find_window_handle(window_title, user32=native)
+    return _client_region_from_handle(native, window_handle)
 
 
 def find_window_handle(window_title: str, *, user32: Any | None = None) -> int:

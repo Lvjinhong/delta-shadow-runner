@@ -63,6 +63,20 @@ def test_dry_run_absolute_click_records_same_three_phase_audit_as_armed() -> Non
     assert all(event.dry_run for event in actuator.events)
 
 
+def test_dry_run_actuator_supports_mouse_only_without_keyboard_permission() -> None:
+    actuator = DryRunActuator(allowed_keys=set(), max_key_hold_ms=250)
+
+    actuator.click_left_at(500, 600, now_ns=100, expires_at_ns=200)
+
+    assert [event.kind for event in actuator.events] == [
+        "mouse_move_absolute",
+        "mouse_left_down",
+        "mouse_left_up",
+    ]
+    with pytest.raises(ValueError, match="不允许的按键"):
+        actuator.key_down("w", now_ns=101)
+
+
 def test_dry_run_absolute_click_rejects_expired_intent_without_event() -> None:
     actuator = DryRunActuator(allowed_keys={"w"}, max_key_hold_ms=250)
 
@@ -195,7 +209,7 @@ def test_dry_run_actuator_keeps_event_time_monotonic_after_late_release() -> Non
 
 @pytest.mark.parametrize(
     ("allowed_keys", "max_key_hold_ms", "message"),
-    [(set(), 250, "允许按键集合"), ({"w"}, 0, "最大按键时长")],
+    [({"w"}, 0, "最大按键时长")],
 )
 def test_dry_run_actuator_rejects_invalid_configuration(
     allowed_keys: set[str], max_key_hold_ms: int, message: str

@@ -20,6 +20,7 @@ from delta_vision.win32_native import (
     enable_per_monitor_dpi_awareness,
     find_window_handle,
     window_client_region,
+    window_client_region_for_handle,
 )
 
 
@@ -385,6 +386,23 @@ def test_window_client_region_converts_client_origin_to_screen_coordinates() -> 
 
     assert (region.left, region.top, region.width, region.height) == (100, 200, 1280, 720)
     assert user32.closed_desktop_handles == [456]
+
+
+def test_window_client_region_for_handle_uses_exact_bound_window() -> None:
+    user32 = FakeUser32()
+
+    region = window_client_region_for_handle(
+        123,
+        user32=user32,
+        wtsapi32=FakeWtsApi32(),
+    )
+
+    assert (region.left, region.top, region.width, region.height) == (
+        100,
+        200,
+        1280,
+        720,
+    )
 
 
 def test_window_client_region_rejects_locked_input_desktop_before_capture() -> None:

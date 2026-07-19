@@ -34,7 +34,7 @@ from .template_profile import TemplateProfile, load_template_profile
 from .win32_native import (
     Win32NativeGateway,
     find_window_handle,
-    window_client_region,
+    window_client_region_for_handle,
 )
 
 SCAN_CODES = {
@@ -378,7 +378,7 @@ def build_windows_runtime(
     armed: bool,
     run_id: str | None = None,
     window_handle_resolver: Callable[[str], int] = find_window_handle,
-    region_resolver: Callable[[str], CaptureRegion] = window_client_region,
+    region_resolver: Callable[[int], CaptureRegion] = window_client_region_for_handle,
     dxcam_factory: Callable[[CaptureRegion], _FrameSource] = DxcamFrameSource,
     mss_factory: Callable[[CaptureRegion], _FrameSource] = MssFrameSource,
     gateway_factory: Callable[[], Win32NativeGateway] = Win32NativeGateway,
@@ -394,8 +394,9 @@ def build_windows_runtime(
     unsupported_keys = allowed_keys - SCAN_CODES.keys()
     if unsupported_keys:
         raise ValueError(f"配置包含不支持的按键: {sorted(unsupported_keys)}")
-    # region_resolver 会先建立 DPI Awareness，随后解析的 HWND 与 DXGI 使用同一坐标系。
-    region = region_resolver(settings.target_window_title)
+    # 只解析一次 HWND；客户区、截图源和 SafetyGate 必须绑定同一窗口实例。
+    target_window_handle = window_handle_resolver(settings.target_window_title)
+    region = region_resolver(target_window_handle)
     if isinstance(settings.perception, TemplateProfile):
         expected_width, expected_height = settings.perception.frame_size
         if (region.width, region.height) != (expected_width, expected_height):
@@ -404,7 +405,6 @@ def build_windows_runtime(
                 f"expected={expected_width}x{expected_height}, "
                 f"actual={region.width}x{region.height}"
             )
-    target_window_handle = window_handle_resolver(settings.target_window_title)
     source_factory = dxcam_factory if settings.capture_backend == "dxcam" else mss_factory
     source = source_factory(region)
     try:

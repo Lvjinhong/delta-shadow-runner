@@ -38,8 +38,6 @@ class DryRunActuator:
     """记录动作并强制按键生命周期，不发送真实输入。"""
 
     def __init__(self, *, allowed_keys: set[str], max_key_hold_ms: int) -> None:
-        if not allowed_keys:
-            raise ValueError("允许按键集合不能为空")
         if max_key_hold_ms <= 0:
             raise ValueError("最大按键时长必须为正数")
         self._allowed_keys = frozenset(allowed_keys)

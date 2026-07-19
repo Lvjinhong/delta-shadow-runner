@@ -271,18 +271,22 @@ def test_session_settings_rejects_menu_and_route_resolution_mismatch() -> None:
 
 def test_windows_menu_runtime_rejects_resolution_before_opening_capture(tmp_path) -> None:
     source_calls = []
+    region_handles: list[int] = []
 
     with pytest.raises(ValueError, match="菜单 Profile 分辨率"):
         build_windows_menu_runtime(
             _settings(),
             artifacts=tmp_path,
             armed=False,
-            region_resolver=lambda _title: CaptureRegion(0, 0, 100, 100),
+            region_resolver=lambda handle: (
+                region_handles.append(handle) or CaptureRegion(0, 0, 100, 100)
+            ),
             window_handle_resolver=lambda _title: 7,
             dxcam_factory=lambda region: source_calls.append(region) or _Source(),
         )
 
     assert source_calls == []
+    assert region_handles == [7]
 
 
 def test_armed_session_is_blocked_before_any_runner_when_not_ready(tmp_path) -> None:
