@@ -321,6 +321,30 @@ def ensure_capture_ready_desktop(
         )
 
 
+def _window_title_from_handle(user32: Any, window_handle: int) -> str:
+    if type(window_handle) is not int or window_handle < 0:
+        raise ValueError("窗口句柄必须是非负整数")
+    if not window_handle:
+        return ""
+    title_length = int(user32.GetWindowTextLengthW(window_handle))
+    buffer = ctypes.create_unicode_buffer(title_length + 1)
+    copied = int(user32.GetWindowTextW(window_handle, buffer, title_length + 1))
+    return "" if copied <= 0 else buffer.value
+
+
+class Win32WindowProbe:
+    """只暴露前台窗口查询，不具备任何键鼠输入方法。"""
+
+    def __init__(self, *, user32: Any | None = None) -> None:
+        self._user32 = user32 or _load_user32()
+
+    def foreground_window_handle(self) -> int:
+        return int(self._user32.GetForegroundWindow() or 0)
+
+    def window_title(self, window_handle: int) -> str:
+        return _window_title_from_handle(self._user32, window_handle)
+
+
 class Win32NativeGateway:
     """只使用公开 user32 API，不安装 hook，也不读取其他进程。"""
 
@@ -334,14 +358,7 @@ class Win32NativeGateway:
         window_handle = self.foreground_window_handle()
         if not window_handle:
             return ""
-        title_length = int(self._user32.GetWindowTextLengthW(window_handle))
-        buffer = ctypes.create_unicode_buffer(title_length + 1)
-        copied = int(
-            self._user32.GetWindowTextW(window_handle, buffer, title_length + 1)
-        )
-        if copied <= 0:
-            return ""
-        return buffer.value
+        return _window_title_from_handle(self._user32, window_handle)
 
     def is_key_pressed(self, virtual_key: int) -> bool:
         return bool(int(self._user32.GetAsyncKeyState(virtual_key)) & 0x8000)

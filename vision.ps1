@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "SessionSample", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", "ControlledE2E", "Preflight")]
+    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "SessionSample", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", "LoopDryRun", "LoopArmed", "WarehouseDryRun", "WarehouseArmed", "ControlledE2E", "Preflight")]
     [string]$Mode = "DryRun",
 
     [string]$Config = "configs/controlled-window.json",
@@ -343,6 +343,75 @@ if ($Mode -eq "SessionSample") {
 $configPath = Join-Path $PSScriptRoot $Config
 if (-not (Test-Path -LiteralPath $configPath)) {
     throw "找不到 Worker 配置: $configPath"
+}
+
+if ($Mode -eq "LoopDryRun") {
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.external_session `
+            --config $configPath `
+            --artifacts $Artifacts `
+            --run-id $effectiveRunId
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
+}
+
+if ($Mode -eq "LoopArmed") {
+    Assert-ArmedConfirmation
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.external_session `
+            --config $configPath `
+            --artifacts $Artifacts `
+            --run-id $effectiveRunId `
+            "--armed" "--confirm-armed"
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
+}
+
+if ($Mode -eq "WarehouseDryRun") {
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.external_session `
+            --config $configPath `
+            --artifacts $Artifacts `
+            --run-id $effectiveRunId `
+            --cleanup-only
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
+}
+
+if ($Mode -eq "WarehouseArmed") {
+    Assert-ArmedConfirmation
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.external_session `
+            --config $configPath `
+            --artifacts $Artifacts `
+            --run-id $effectiveRunId `
+            --cleanup-only "--armed" "--confirm-armed"
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
 }
 
 if ($Mode -eq "SessionArmed") {

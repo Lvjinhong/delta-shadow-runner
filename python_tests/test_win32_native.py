@@ -17,6 +17,7 @@ from delta_vision.win32_native import (
     MOUSEEVENTF_VIRTUALDESK,
     ImeDisabledSession,
     Win32NativeGateway,
+    Win32WindowProbe,
     enable_per_monitor_dpi_awareness,
     find_window_handle,
     window_client_region,
@@ -161,6 +162,22 @@ def test_gateway_reads_foreground_title_and_emergency_key() -> None:
     assert gateway.is_key_pressed(0x7B) is False
     user32.key_state = -32768
     assert gateway.is_key_pressed(0x7B) is True
+
+
+def test_window_probe_exposes_queries_without_any_input_method() -> None:
+    user32 = FakeUser32()
+    probe = Win32WindowProbe(user32=user32)
+
+    assert probe.foreground_window_handle() == 123
+    assert probe.window_title(123) == "Delta Vision Test Target"
+    for method in (
+        "send_key",
+        "send_mouse_relative",
+        "send_mouse_absolute",
+        "send_mouse_left",
+        "is_key_pressed",
+    ):
+        assert not hasattr(probe, method)
 
 
 def test_gateway_sends_scan_code_key_down_and_key_up() -> None:

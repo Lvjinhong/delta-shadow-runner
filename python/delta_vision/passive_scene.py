@@ -18,7 +18,11 @@ from .frames import CapturedFrame, FrameRecorder
 from .menu_automation import MenuScene, SceneDecisionReason, SceneObservation
 from .menu_profile import LoadedMenuProfile
 from .sample_frames import validate_run_id
-from .win32_native import Win32NativeGateway, find_window_handle, window_client_region
+from .win32_native import (
+    Win32WindowProbe,
+    find_window_handle,
+    window_client_region_for_handle,
+)
 
 
 class PassiveFrameSource(Protocol):
@@ -29,6 +33,14 @@ class PassiveFrameSource(Protocol):
 
 class PassiveSceneObserver(Protocol):
     def observe(self, frame: CapturedFrame) -> SceneObservation: ...
+
+
+class WindowProbe(Protocol):
+    """被动回厅只需要窗口查询，禁止暴露输入方法。"""
+
+    def foreground_window_handle(self) -> int: ...
+
+    def window_title(self, window_handle: int) -> str: ...
 
 
 class PassiveReturnStatus(StrEnum):
@@ -242,28 +254,28 @@ class _ForegroundGuardedSource:
         self,
         source: PassiveFrameSource,
         *,
-        gateway: Win32NativeGateway,
+        window_probe: WindowProbe,
         target_window_handle: int,
         target_window_title: str,
         expected_region: CaptureRegion,
-        region_resolver: Callable[[str], CaptureRegion],
+        region_resolver: Callable[[int], CaptureRegion],
     ) -> None:
         self._source = source
-        self._gateway = gateway
+        self._window_probe = window_probe
         self._target_window_handle = target_window_handle
         self._target_window_title = target_window_title
         self._expected_region = expected_region
         self._region_resolver = region_resolver
 
     def _assert_binding(self, *, phase: str) -> None:
-        foreground_handle = self._gateway.foreground_window_handle()
-        foreground_title = self._gateway.foreground_title()
+        foreground_handle = self._window_probe.foreground_window_handle()
+        foreground_title = self._window_probe.window_title(foreground_handle)
         if (
             foreground_handle != self._target_window_handle
             or foreground_title != self._target_window_title
         ):
             raise RuntimeError(f"{phase}目标游戏不再是精确匹配的前台窗口")
-        current_region = self._region_resolver(self._target_window_title)
+        current_region = self._region_resolver(self._target_window_handle)
         if current_region != self._expected_region:
             raise RuntimeError(
                 f"{phase}目标游戏客户区发生变化: "
@@ -310,9 +322,9 @@ def run_windows_passive_return(
     policy: PassiveReturnPolicy,
     artifacts: str | Path,
     run_id: str,
-    region_resolver: Callable[[str], CaptureRegion] = window_client_region,
+    region_resolver: Callable[[int], CaptureRegion] = window_client_region_for_handle,
     window_handle_resolver: Callable[[str], int] = find_window_handle,
-    gateway_factory: Callable[[], Win32NativeGateway] = Win32NativeGateway,
+    window_probe_factory: Callable[[], WindowProbe] = Win32WindowProbe,
     dxcam_factory: Callable[[CaptureRegion], PassiveFrameSource] = DxcamFrameSource,
     mss_factory: Callable[[CaptureRegion], PassiveFrameSource] = MssFrameSource,
 ) -> PassiveReturnResult:
@@ -325,15 +337,15 @@ def run_windows_passive_return(
     artifact_root.mkdir(parents=True, exist_ok=False)
     summary_path = artifact_root / "passive-return-summary.json"
     try:
-        region = region_resolver(target_window_title)
+        target_window_handle = window_handle_resolver(target_window_title)
+        region = region_resolver(target_window_handle)
         if (region.width, region.height) != menu_profile.frame_size:
             raise ValueError(
                 "菜单 Profile 分辨率与目标窗口客户区不一致: "
                 f"expected={menu_profile.frame_size[0]}x{menu_profile.frame_size[1]}, "
                 f"actual={region.width}x{region.height}"
             )
-        target_window_handle = window_handle_resolver(target_window_title)
-        gateway = gateway_factory()
+        window_probe = window_probe_factory()
         recorder = FrameRecorder(artifact_root / "replay")
         event_writer = JsonlEventWriter(
             artifact_root / "events.jsonl",
@@ -344,7 +356,7 @@ def run_windows_passive_return(
         source_factory = dxcam_factory if capture_backend == "dxcam" else mss_factory
         source = _ForegroundGuardedSource(
             source_factory(region),
-            gateway=gateway,
+            window_probe=window_probe,
             target_window_handle=target_window_handle,
             target_window_title=target_window_title,
             expected_region=region,

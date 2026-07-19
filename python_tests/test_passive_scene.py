@@ -1,4 +1,7 @@
+import time
 from collections.abc import Iterable
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,6 +18,7 @@ from delta_vision.passive_scene import (
     PassiveReturnStatus,
     _ForegroundGuardedSource,
     run_passive_return_loop,
+    run_windows_passive_return,
 )
 
 
@@ -83,7 +87,7 @@ class _Clock:
         return self.now_ns
 
 
-class _Gateway:
+class _WindowProbe:
     def __init__(self, handles: Iterable[int], titles: Iterable[str]) -> None:
         self._handles = iter(handles)
         self._titles = iter(titles)
@@ -94,7 +98,8 @@ class _Gateway:
         self._last_handle = next(self._handles, self._last_handle)
         return self._last_handle
 
-    def foreground_title(self) -> str:
+    def window_title(self, window_handle: int) -> str:
+        assert window_handle == self._last_handle
         self._last_title = next(self._titles, self._last_title)
         return self._last_title
 
@@ -282,7 +287,7 @@ def test_guard_closes_when_client_region_changes_during_capture() -> None:
     source = _Source([_frame(1, MenuScene.POST_MATCH)])
     guarded = _ForegroundGuardedSource(
         source,
-        gateway=_Gateway((7, 7), ("三角洲行动  ", "三角洲行动  ")),
+        window_probe=_WindowProbe((7, 7), ("三角洲行动  ", "三角洲行动  ")),
         target_window_handle=7,
         target_window_title="三角洲行动  ",
         expected_region=expected_region,
@@ -306,7 +311,7 @@ def test_guard_closes_when_window_loses_focus_during_capture() -> None:
     source = _Source([_frame(1, MenuScene.POST_MATCH)])
     guarded = _ForegroundGuardedSource(
         source,
-        gateway=_Gateway((7, 8), ("三角洲行动  ",)),
+        window_probe=_WindowProbe((7, 8), ("三角洲行动  ",)),
         target_window_handle=7,
         target_window_title="三角洲行动  ",
         expected_region=expected_region,
@@ -336,3 +341,40 @@ def test_close_failure_does_not_hide_primary_observation_error() -> None:
         )
 
     assert any("close boom" in note for note in (raised.value.__notes__ or ()))
+
+
+def test_windows_passive_return_uses_read_only_probe_bound_to_exact_handle(
+    tmp_path: Path,
+) -> None:
+    expected_region = CaptureRegion(100, 200, 96, 64)
+    region_handles: list[int] = []
+    handle_titles: list[str] = []
+    profile = SimpleNamespace(frame_size=(96, 64), observer=_Observer())
+    probe = _WindowProbe((7, 7), ("三角洲行动  ", "三角洲行动  "))
+
+    result = run_windows_passive_return(
+        menu_profile=profile,
+        target_window_title="三角洲行动  ",
+        capture_backend="mss",
+        policy=_policy(confirmation_frames=1),
+        artifacts=tmp_path / "passive",
+        run_id="passive-read-only",
+        window_handle_resolver=lambda title: handle_titles.append(title) or 7,
+        region_resolver=lambda handle: (
+            region_handles.append(handle) or expected_region
+        ),
+        window_probe_factory=lambda: probe,
+        mss_factory=lambda _region: _Source(
+            [
+                _frame(
+                    1,
+                    MenuScene.BASE,
+                    captured_at_ns=time.monotonic_ns(),
+                )
+            ]
+        ),
+    )
+
+    assert result.status is PassiveReturnStatus.BASE_CONFIRMED
+    assert handle_titles == ["三角洲行动  "]
+    assert region_handles == [7, 7, 7]

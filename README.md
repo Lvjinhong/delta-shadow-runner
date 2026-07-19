@@ -368,6 +368,46 @@ uv run python -m delta_vision.game_session `
 
 ZIP 根目录直接包含 `menu.json`、模板目录和来源数据集目录，因此应解压到 `profiles\menu-zero-cost`，不要再额外套一层同名目录。
 
+### 4.2 准备仓库空保险箱 Profile
+
+仓库清理使用独立 Profile，固定拓扑是 `BASE → WAREHOUSE → BASE`。当前零成本策略只接受同时满足以下三份证据的空保险箱：
+
+1. 容量计数为 `0/2`；
+2. 0 号保险箱格为空；
+3. 1 号保险箱格为空。
+
+缺少任一证据、检测到非空格、页面歧义或未知页面都会停止，不会尝试搬运物品。仓库 Profile 不能只复制 `menu.json`；必须连同模板、来源 manifest 和 calibration 帧一起交付。`output/` 是本地运行产物并被 Git 忽略，全新 clone 需要从已验证的数据重新生成或复制 bundle：
+
+```bash
+uv run python -m delta_vision.package_menu_profile \
+  --profile output/windows-ready/warehouse-empty-1080p-v3/menu.json \
+  --output output/windows-ready/warehouse-empty \
+  --archive output/windows-ready/warehouse-empty.zip
+```
+
+在 Windows 仓库根目录解压并只做配置校验：
+
+```powershell
+New-Item -ItemType Directory -Force profiles\warehouse-empty | Out-Null
+Expand-Archive -LiteralPath .\warehouse-empty.zip `
+  -DestinationPath profiles\warehouse-empty
+
+uv run python -m delta_vision.external_session `
+  --config configs\game-route.json `
+  --cleanup-only `
+  --validate-only
+```
+
+`configs\game-route.json` 中 `warehouse_cleanup.profile` 应指向上述 `menu.json`。Profile 路径必须留在项目目录内；绝对路径、目录越界、哈希不一致和非 1920×1080 Profile 都会在解析窗口或创建输入设备前失败。
+
+菜单、路线和仓库三套资产齐全后，用生产入口做完整的无副作用校验：
+
+```powershell
+uv run python -m delta_vision.external_session `
+  --config configs\game-route.json `
+  --validate-only
+```
+
 ## 5. 运行
 
 首次运行或修改分辨率、HUD、模板、路线配置后，应先让 `start-windows-preflight.cmd` 通过。Preflight 只证明 Windows 截图和受控输入链可用，不代表真实游戏路线已经准确。
@@ -381,14 +421,23 @@ start-game-route.cmd
 菜单提供：
 
 1. `D`：局内 dry-run；先由你手动进图，再执行截图、识别、A*、状态机和回放，不发送键鼠输入；
-2. `A`：全会话 armed；从大厅开始识别并一次性点击零号大坝流程，只有画面确认 `IN_MATCH` 后才启动局内路线；
-3. `Q`：退出。
+2. `L`：完整外循环 dry-run；按大厅进图、局内路线、被动回厅、仓库清理的顺序只识别和记录，不发送键鼠输入。由于 DryRun 不会执行进图点击，在线运行通常会安全停止在首个待执行动作；
+3. `A`：完整外循环 armed；从主页进图，运行路线，被动确认回到主页，清理空保险箱，上一轮完整成功后才开始下一轮；
+4. `Q`：退出。
+
+只验证仓库时可双击：
+
+```text
+start-warehouse-cleanup.cmd
+```
+
+该入口的 `D` 只识别并记录进入仓库和返回主页两个动作；`A` 只允许发送这两次受保护鼠标点击，不包含任何键盘扫描码，也不允许非空物资转移。
 
 armed 有三层显式确认：
 
-1. `game-route.json` 的 `armed_ready` 必须由你在完成 blind 评估和 dry-run 后改为 `true`；
+1. 完整循环要求根 `armed_ready` 和 `warehouse_cleanup.armed_ready` 都在各自 blind 评估和 DryRun 通过后改为 `true`；仓库单独运行只检查后者；
 2. `.cmd` 会再次要求 `Y/N` 确认；
-3. Worker 启动时检查窗口精确标题、启动 HWND、当前前台 HWND 和 F12。
+3. PowerShell 与 Python CLI 分别要求 `-ConfirmArmed`、`--confirm-armed`，运行时继续检查窗口精确标题、启动 HWND、当前前台 HWND 和 F12。
 
 也可以直接运行：
 
@@ -397,9 +446,19 @@ armed 有三层显式确认：
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\vision.ps1 -Mode DryRun -Config configs\game-route.json
 
-# 从大厅开始运行完整会话并显式发送标准输入
+# 完整外循环只读识别
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\vision.ps1 -Mode SessionArmed -Config configs\game-route.json -ConfirmArmed
+  -File .\vision.ps1 -Mode LoopDryRun -Config configs\game-route.json
+
+# 完整外循环并显式发送受保护输入
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode LoopArmed -Config configs\game-route.json -ConfirmArmed
+
+# 单独验证仓库；先 DryRun，再在独立审核后 Armed
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode WarehouseDryRun -Config configs\game-route.json
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode WarehouseArmed -Config configs\game-route.json -ConfirmArmed
 
 # 高级用法：已经手动进图后，只运行局内 armed 路线
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -420,22 +479,25 @@ Worker 退出码：
 
 ```text
 artifacts/runs/YYYYMMDD-HHMMSS/
-├── session-summary.json
-├── menu/
-│   ├── events.jsonl
-│   └── replay/
-│       ├── input-events.jsonl
-│       ├── manifest.jsonl
-│       └── frames/
-└── route/
-    ├── events.jsonl
-    └── replay/
-        ├── input-events.jsonl
-        ├── manifest.jsonl
-        └── frames/
+├── external-loop-summary.json
+└── cycle-0001/
+    ├── entry/
+    │   ├── events.jsonl
+    │   └── replay/
+    ├── match/
+    │   ├── events.jsonl
+    │   └── replay/
+    ├── return/
+    │   ├── passive-return-summary.json
+    │   └── replay/
+    └── cleanup/
+        ├── cleanup-summary.json
+        └── runtime/
+            ├── events.jsonl
+            └── replay/
 ```
 
-全会话的菜单和路线目录使用同一个 `run_id`。`session-summary.json` 只有在菜单确认 `COMPLETED` 后才可能出现路线结果；菜单停止时 `route` 必须为 `null`。每个 `input-events.jsonl` 使用稳定 `event_id` 幂等记录 `mouse_move_absolute/mouse_left_down/mouse_left_up/mouse_move/key_down/key_up`；即使双日志中的一端暂时写失败，旧游标恢复也不会重复编号或拼接坏尾行。
+完整外循环的四个阶段使用同一个 cycle `run_id`。只有 entry 确认 `IN_MATCH` 才会启动 match；只有被动 return 确认 `BASE` 才会启动 cleanup；只有 cleanup 确认空保险箱并返回 `BASE` 才会开始下一轮。每个 `input-events.jsonl` 使用稳定 `event_id` 幂等记录 `mouse_move_absolute/mouse_left_down/mouse_left_up/mouse_move/key_down/key_up`；即使双日志中的一端暂时写失败，旧游标恢复也不会重复编号或拼接坏尾行。
 
 每次 Worker 运行都会清空该运行目录中的旧 `events.jsonl`，并给事件写入本次 `run_id`。不要手工把不同运行目录的证据拼成一份报告；Preflight 会将其判为失败。
 

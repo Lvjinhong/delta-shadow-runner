@@ -12,6 +12,22 @@
     "loop_interval_ms": 20,
     "max_duration_seconds": 120
   },
+  "external_loop": {
+    "cycle_limit": 1,
+    "return": {
+      "confirmation_frames": 3,
+      "maximum_confirmation_span_ms": 500,
+      "maximum_frame_age_ms": 500,
+      "loop_interval_ms": 20,
+      "max_duration_seconds": 180
+    }
+  },
+  "warehouse_cleanup": {
+    "profile": "../profiles/warehouse-empty/menu.json",
+    "armed_ready": false,
+    "loop_interval_ms": 20,
+    "max_duration_seconds": 30
+  },
   "perception": {
     "mode": "template",
     "template_profile": "../profiles/route-01/templates.json"

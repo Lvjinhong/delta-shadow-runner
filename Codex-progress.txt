@@ -159,3 +159,13 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 原 A-region+B-HWND 攻击重放已被阻断：handle 222 仅传入 region resolver 一次并选择 B 客户区，旧 A 坐标不可达；全仓库其余按标题取客户区的路径均无真实输入能力。
 - 本机 Python 3.12.12 全量验证：793 项测试通过，总覆盖率 84.76%；Ruff、sdist/wheel build 与 `git diff --check` 通过。独立 code-reviewer 最终无 CRITICAL/HIGH/MEDIUM finding，结论 APPROVE。
 - 当前产品基线继续固定为游戏客户区 1920×1080；窗口外框尺寸、桌面缩放或 UI 缩放不能替代客户区尺寸校验。Windows SSH 仍不可达，本阶段尚未向游戏发送仓库真实点击，也未翻转任何 live E2E feature pass。
+
+[2026-07-19 完整外循环生产入口]
+- 新增 `external_session.py`：从同一 schema v2 配置装配 `entry → match → 被动 return → warehouse cleanup`，并把具体 `WindowsWarehouseCleanupSession` 注入外部循环；生产 CLI 同时提供不依赖路线 Profile 的 `--cleanup-only`。
+- 配置增加 `external_loop` 和 `warehouse_cleanup`；标题、截图 backend、F12、最大按键时长只从根配置派生，entry/match/cleanup 必须严格同源。仓库确认帧、漂移、帧龄和转换超时从经过校验的仓库 Profile 派生。
+- Armed 完整循环必须同时满足路线和仓库两项 `armed_ready`，正式入口还要求 CMD Y/N、PowerShell `-ConfirmArmed` 和 Python `--confirm-armed`；任一缺失都会在 artifact、窗口解析或输入对象创建前拒绝。
+- `vision.ps1` 新增 `LoopDryRun/LoopArmed/WarehouseDryRun/WarehouseArmed`，全部复用单实例 mutex 且原样传播退出码；`start-game-route.cmd` 已切到完整外循环，新增 `start-warehouse-cleanup.cmd` 用于单独验证两次仓库点击。
+- 独立复审发现 entry/match 的 backend/max-hold 可漂移，以及 DryRun 被动回厅仍创建具备输入能力的 gateway；均已先红后绿修复。回厅现在使用只读 `Win32WindowProbe`，没有 send/key/mouse 方法，并从同一 HWND 派生标题与客户区。
+- 本机使用真实 1920×1080 仓库 v3 bundle 执行 `external_session --cleanup-only --validate-only` 通过，输出精确标题、Profile ID、1920×1080 和 `armed_ready=false`，未创建运行 artifact 或输入对象。
+- 本机 Python 3.12.12 全量验证：816 项测试通过，总覆盖率 85.07%；Ruff、sdist/wheel build、CLI help 与 `git diff --check` 通过。独立 code-reviewer 重放两项 HIGH 后最终无代码 finding，结论 APPROVE。
+- Windows `192.168.3.7` publickey-only SSH 仍在 5 秒连接阶段超时；PowerShell parser、CMD 分支、0/1/2 退出码、仓库 live DryRun/Armed 和完整游戏 E2E 仍是交付门禁，本阶段没有发送任何真实游戏输入，也没有翻转 feature pass。
