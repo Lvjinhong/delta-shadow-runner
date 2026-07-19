@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .artifact_io import write_atomic_json
 from .game_session import WindowsMenuSettings, run_windows_menu
@@ -37,6 +37,34 @@ class ExternalLoopStatus(StrEnum):
     COMPLETED = "completed"
     STOPPED = "stopped"
     FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupSessionResult:
+    completed: bool
+    reason: str | None
+    summary: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if type(self.completed) is not bool:
+            raise ValueError("清理结果 completed 必须是布尔值")
+        if self.completed and self.reason is not None:
+            raise ValueError("清理完成时不能携带失败原因")
+        if not self.completed and (not isinstance(self.reason, str) or not self.reason.strip()):
+            raise ValueError("清理未完成时必须提供原因")
+        if not isinstance(self.summary, Mapping):
+            raise ValueError("清理结果 summary 必须是对象")
+        object.__setattr__(self, "summary", dict(self.summary))
+
+
+class CleanupSession(Protocol):
+    def run(
+        self,
+        *,
+        artifacts: Path,
+        armed: bool,
+        run_id: str,
+    ) -> CleanupSessionResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +105,7 @@ class ExternalLoopCycleResult:
     returned: PassiveReturnResult | None = None
     cleanup_started: bool = False
     cleanup_completed: bool = False
+    cleanup_summary: Mapping[str, object] | None = None
 
     @property
     def cleanup_ran(self) -> bool:
@@ -140,6 +169,7 @@ def _cycle_payload(cycle: ExternalLoopCycleResult) -> dict[str, object]:
         "cleanup_started": cycle.cleanup_started,
         "cleanup_completed": cycle.cleanup_completed,
         "cleanup_ran": cycle.cleanup_ran,
+        "cleanup_summary": (None if cycle.cleanup_summary is None else dict(cycle.cleanup_summary)),
     }
 
 
@@ -213,6 +243,7 @@ def run_external_loop(
     entry_runner: Callable[..., MenuLoopResult] = run_windows_menu,
     match_runner: Callable[..., ControlLoopResult] = run_windows_worker,
     return_observer: Callable[..., PassiveReturnResult] = run_windows_passive_return,
+    cleanup_session: CleanupSession | None = None,
     cleanup_hook: Callable[[ExternalLoopCycleResult], Any] | None = None,
 ) -> ExternalLoopResult:
     """每轮只有确认回到 BASE 后，才允许清理并开始下一轮。"""
@@ -222,6 +253,8 @@ def run_external_loop(
         raise ValueError("armed 必须是布尔值")
     if armed and not settings.match.armed_ready:
         raise ValueError("外部循环 armed 被配置 armed_ready=false 阻止")
+    if cleanup_session is not None and cleanup_hook is not None:
+        raise ValueError("cleanup_session 与 cleanup_hook 不能同时配置")
     artifact_root = Path(artifacts)
     artifact_root.mkdir(parents=True, exist_ok=False)
     summary_path = artifact_root / "external-loop-summary.json"
@@ -305,7 +338,33 @@ def run_external_loop(
                 )
 
             phase = ExternalLoopPhase.CLEANUP
-            if cleanup_hook is not None:
+            if cleanup_session is not None:
+                current_cycle = replace(current_cycle, cleanup_started=True)
+                cleanup = cleanup_session.run(
+                    artifacts=cycle_root / "cleanup",
+                    armed=armed,
+                    run_id=cycle_run_id,
+                )
+                if not isinstance(cleanup, CleanupSessionResult):
+                    raise TypeError("cleanup_session.run 必须返回 CleanupSessionResult")
+                current_cycle = replace(
+                    current_cycle,
+                    cleanup_completed=cleanup.completed,
+                    cleanup_summary=dict(cleanup.summary),
+                )
+                if not cleanup.completed:
+                    cycles.append(current_cycle)
+                    current_cycle = None
+                    return _stopped_result(
+                        run_id=parsed_run_id,
+                        armed=armed,
+                        summary_path=summary_path,
+                        completed_cycles=completed_cycles,
+                        cycles=cycles,
+                        phase=phase,
+                        reason=cleanup.reason or "仓库清理未完成",
+                    )
+            elif cleanup_hook is not None:
                 current_cycle = replace(current_cycle, cleanup_started=True)
                 cleanup_hook(current_cycle)
                 current_cycle = replace(current_cycle, cleanup_completed=True)
