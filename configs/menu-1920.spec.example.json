@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "profile_id": "menu-zero-cost-1080p-v1",
+  "expected_frame_size": [
+    1920,
+    1080
+  ],
+  "minimum_scene_margin": 0.07,
+  "detector_defaults": {
+    "scales": [
+      1.0
+    ],
+    "score_threshold": 0.83,
+    "minimum_margin": 0.06,
+    "nms_radius_px": 24
+  },
+  "controller": {
+    "confirmation_frames": 3,
+    "maximum_confirmation_span_ms": 750,
+    "maximum_action_point_drift_px": 10,
+    "maximum_page_point_drift_px": 10,
+    "maximum_frame_age_ms": 250,
+    "transition_timeout_ms": 180000
+  },
+  "templates": [
+    {
+      "template_id": "base-zero-dam-depart",
+      "scene": "base",
+      "source_run_id": "homepage-windowed-1080p-home-clean-20260719-01",
+      "source_sequence": 0,
+      "page": {
+        "crop": {
+          "left": 1460,
+          "top": 800,
+          "width": 370,
+          "height": 140
+        },
+        "search_roi": {
+          "left": 1400,
+          "top": 740,
+          "width": 480,
+          "height": 220
+        }
+      },
+      "action": {
+        "crop": {
+          "left": 1665,
+          "top": 949,
+          "width": 150,
+          "height": 32
+        },
+        "search_roi": {
+          "left": 1440,
+          "top": 700,
+          "width": 400,
+          "height": 290
+        },
+        "action_region": {
+          "left": 1645,
+          "top": 943,
+          "width": 187,
+          "height": 45
+        }
+      }
+    },
+    {
+      "template_id": "in-match-search-and-evacuate",
+      "scene": "in_match",
+      "source_run_id": "inmatch-active-1080p-20260719-01",
+      "source_sequence": 0,
+      "page": {
+        "crop": {
+          "left": 820,
+          "top": 160,
+          "width": 280,
+          "height": 48
+        },
+        "search_roi": {
+          "left": 760,
+          "top": 130,
+          "width": 400,
+          "height": 120
+        }
+      }
+    },
+    {
+      "template_id": "post-match-season-pass",
+      "scene": "post_match",
+      "source_run_id": "post-match-season-pass-1080p-20260719-01",
+      "source_sequence": 0,
+      "page": {
+        "crop": {
+          "left": 800,
+          "top": 94,
+          "width": 320,
+          "height": 52
+        },
+        "search_roi": {
+          "left": 700,
+          "top": 60,
+          "width": 520,
+          "height": 130
+        }
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "source": "base",
+      "target": "in_match",
+      "action_kind": "click",
+      "key": null
+    }
+  ],
+  "stop_scenes": [
+    "in_match"
+  ]
+}
