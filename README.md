@@ -47,9 +47,11 @@
 11. 标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作回放的单条离线 E2E；
 12. 截图驱动的大厅菜单状态机：页面锚点和动作锚点分别确认，多帧一致后只点击一次，直到画面确认进入 `IN_MATCH`；
 13. 全会话编排：菜单没有确认完成时绝不启动局内路线，菜单与路线共用 `run_id` 并分别保存证据；
-14. 自动测试、Ruff、sdist/wheel build 和独立控制链验收。最新的精确测试数与覆盖率以仓库当前测试输出和 `Codex-progress.txt` 为准。
+14. 完整外循环编排：严格串行执行零成本进图、局内 runner、只读回厅确认和空保险箱仓库清理；
+15. 1920×1080 受保护路线采集：三帧 HUD 确认后，按显式短脉冲计划保存动作前后截图和真实输入事件；
+16. 自动测试、Ruff、sdist/wheel build 和独立控制链验收。最新的精确测试数与覆盖率以仓库当前测试输出和 `Codex-progress.txt` 为准。
 
-尚未完成的是完整的主页循环、《三角洲行动》真实路线数据和真实路线 E2E。Windows 受控窗口输入链、F12 急停和游戏截图已实测，但这些证据不能替代真实路线成功率。仓库不能凭合成数据承诺游戏准确率；必须先在你的固定分辨率、固定地图、固定出生区域和固定视角上采样并评估。
+完整外循环和路线采集代码已经实现并通过本机离线故障注入，但 Windows 上的仓库真实点击、零号大坝固定路线数据和整轮游戏 E2E 仍未完成。Windows 受控窗口输入链、F12 急停和游戏截图的既有实测不能替代真实路线成功率。仓库不能凭合成数据承诺游戏准确率；必须先在固定分辨率、固定地图、固定出生区域和固定视角上采样并评估。
 
 ## 2. Windows 准备
 
@@ -97,17 +99,42 @@ Preflight 的 `SendInput` 只发给标题和 HWND 都经过校验的独立测试
 
 ### 3.1 采集 calibration 运行
 
-先打开游戏并进入路线起点。运行下面的命令后有 5 秒切回游戏，然后由你人工完整走一遍路线；采样器只截图，不发送任何输入。
-
-如果已经有与当前主页 UI 匹配、通过校验的菜单 Profile，优先双击：
+先复制并编辑 `configs\game-route.json`，让 `menu.profile` 指向当前 1920×1080 菜单 Profile。已经手动进入零号大坝并看到稳定 HUD 后，优先双击：
 
 ```text
 start-route-calibration.cmd
 ```
 
-它会先通过截图确认菜单页面并发送受保护的菜单动作；只有连续多帧确认 `IN_MATCH` 后，才立即释放菜单输入并启动 120 秒只读采样。采样阶段由你人工走固定短路线，不发送任何局内键鼠输入。这个入口不依赖尚未生成的路线 Profile，解决“先手动出发、再启动采样时角色已经倒地”的竞态。
+入口提供四个模式：
 
-默认菜单 Profile 是 `profiles\menu-zero-cost\menu.json`，也可以把另一个 `menu.json` 路径作为第一个参数传入。仓库当前不附带适用于你账号的真实 1080p Profile；文件不存在时脚本会在发送任何输入前退出。
+1. `D`：连续三帧确认 1920×1080 局内 HUD，保存只读证据，不创建输入 gateway；
+2. `A`：要求 `.cmd` 人工确认、PowerShell `-ConfirmArmed`、Python `--confirm-armed` 和 `route_capture.armed_ready=true`，再执行配置中的受保护短脉冲；
+3. `M`：保留旧版流程，通过菜单 Profile 自动进图，确认 `IN_MATCH` 后只读采样 120 秒，由你人工走路线；
+4. `Q`：退出。
+
+首次 `A` 只保留示例中的一个 `w` 80ms 脉冲。路线采集强制 F12（虚拟键 123），单脉冲和独立释放 watchdog 上限为 150ms；按键保持期间每 10–50ms 复核 F12、前台 HWND、完整标题、客户区位置和 1920×1080 尺寸。不要在审核首轮动作前增加更多步骤。
+
+也可以先执行完全不打开窗口、不截图、不创建 artifact 的配置校验：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 `
+  -Mode RouteCaptureValidate `
+  -Config configs\game-route.json
+```
+
+已经停在局内时，可分别执行只读确认和受保护采集：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode RouteCaptureDryRun -Config configs\game-route.json
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode RouteCaptureArmed `
+  -Config configs\game-route.json -ConfirmArmed
+```
+
+每一步必须先成功持久化 pre-frame 才能输入；每个实际输入事件立即持久化，post-frame 必须晚于最后输入。部分失败不会重试已发送动作，也不会生成完整 `run.json`。
 
 也可以在已经手动进图后使用原始只读采样命令：
 
@@ -276,6 +303,22 @@ copy configs\game-route.example.json configs\game-route.json
     "loop_interval_ms": 20,
     "max_duration_seconds": 120
   },
+  "route_capture": {
+    "armed_ready": false,
+    "dataset_split": "calibration",
+    "guard_interval_ms": 20,
+    "max_duration_seconds": 30,
+    "steps": [
+      {
+        "step_id": "spawn-forward-01",
+        "keys": ["w"],
+        "pulse_ms": 80,
+        "mouse_dx": 0,
+        "mouse_dy": 0,
+        "settle_ms": 300
+      }
+    ]
+  },
   "navigation": {
     "arrival_confirmations": 3,
     "initial_waypoint_confirmations": 3,
@@ -314,6 +357,8 @@ copy configs\game-route.example.json configs\game-route.json
 4. `e` 可用于“交互点 → 交互完成状态”的单独路线边；
 5. 菜单支持 `tab`，局内路线支持 `w/a/s/d/e/shift/space`；鼠标轴范围为 `-4096..4096`；
 6. 示例全部是占位值，不能直接当作真实地图路线。
+
+`route_capture.steps` 只用于生成可追溯 calibration 数据，不表示已经导航到目标。每步支持 1–3 个唯一按键；`pulse_ms` 最大 150ms，鼠标轴范围为 `-4096..4096`，步骤 ID 必须唯一。`route_capture.armed_ready` 与正式路线的根 `armed_ready` 相互独立，只有审查完当前采集计划后才可打开。
 
 ### 4.1 准备大厅菜单 Profile
 
@@ -460,6 +505,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\vision.ps1 -Mode WarehouseArmed -Config configs\game-route.json -ConfirmArmed
 
+# 已经手动进图后，先确认 HUD，再执行审核过的短脉冲采集计划
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode RouteCaptureDryRun -Config configs\game-route.json
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\vision.ps1 -Mode RouteCaptureArmed -Config configs\game-route.json -ConfirmArmed
+
 # 高级用法：已经手动进图后，只运行局内 armed 路线
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\vision.ps1 -Mode Armed -Config configs\game-route.json -ConfirmArmed
@@ -500,6 +551,24 @@ artifacts/runs/YYYYMMDD-HHMMSS/
 完整外循环的四个阶段使用同一个 cycle `run_id`。只有 entry 确认 `IN_MATCH` 才会启动 match；只有被动 return 确认 `BASE` 才会启动 cleanup；只有 cleanup 确认空保险箱并返回 `BASE` 才会开始下一轮。每个 `input-events.jsonl` 使用稳定 `event_id` 幂等记录 `mouse_move_absolute/mouse_left_down/mouse_left_up/mouse_move/key_down/key_up`；即使双日志中的一端暂时写失败，旧游标恢复也不会重复编号或拼接坏尾行。
 
 每次 Worker 运行都会清空该运行目录中的旧 `events.jsonl`，并给事件写入本次 `run_id`。不要手工把不同运行目录的证据拼成一份报告；Preflight 会将其判为失败。
+
+路线采集运行会生成：
+
+```text
+artifacts/runs/YYYYMMDD-HHMMSS/
+├── route-capture-summary.json
+├── audit.jsonl
+├── hud/
+│   ├── manifest.jsonl
+│   └── frames/
+└── dataset/
+    ├── run.json 或 partial-run.json
+    ├── manifest.jsonl
+    ├── input-events.jsonl
+    └── frames/
+```
+
+只有所有步骤、最终输入释放、截图源关闭和完成摘要均成功，才会把 `run.json` 作为最后的完整提交标记。任何失败只会留下 `partial-run.json`；标定工具不得把 partial 数据集当成完整路线运行。
 
 一次 Preflight 还会生成：
 

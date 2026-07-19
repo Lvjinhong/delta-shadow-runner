@@ -1,6 +1,6 @@
 {
   "project": "Delta External Vision Runner",
-  "version": 17,
+  "version": 18,
   "lastUpdated": "2026-07-19",
   "features": [
     {
@@ -33,7 +33,7 @@
         ".python-version 固定 Python 3.12，uv.lock 锁定跨平台依赖",
         "pyproject.toml 提供 pytest branch coverage 与 Ruff 门禁",
         "python/delta_vision 包含不可变配置、录制回放、颜色感知、A*、视觉导航、dry-run/Win32 actuator、基准工具和 JSONL 事件",
-        "本机 Python 3.12.12：816 项测试、Ruff 通过，总覆盖率 85.07%；sdist/wheel build 通过；pip-audit 未发现锁定运行时依赖的已知漏洞；A* 与参考 Dijkstra 随机差分 1000/1000",
+        "本机 Python 3.12.12：853 项测试、Ruff 通过，总覆盖率 84.77%；sdist/wheel build 通过；pip-audit 未发现锁定运行时依赖的已知漏洞；A* 与参考 Dijkstra 随机差分 1000/1000",
         "Windows CPython 3.12.13：419 项测试、Ruff、sdist/wheel build 通过；OpenCV 平台舍入只调整测试容差，业务阈值未变"
       ]
     },
@@ -54,7 +54,8 @@
       "passes": false,
       "evidence": [
         "FrameRecorder 保存 PNG、时间戳、分辨率、导航元数据和独立 input-events.jsonl；ReplayFrameSource 校验路径、顺序、解码和尺寸，并直接实现 Worker 的 grab/close 协议",
-        "本机标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放，以及正常结束、无下一帧超时、截图异常和慢截图/watchdog 并发均通过；输入事件以稳定 event_id 在 replay/runtime 双端幂等落盘，完整写后失败、半写坏尾行和跨实例旧游标恢复均通过故障注入；Windows 实际采集产物尚未生成"
+        "本机标定 Profile → 独立 blind 评估（含负样本）→ schema v2 Worker → 动作事件回放，以及正常结束、无下一帧超时、截图异常和慢截图/watchdog 并发均通过；输入事件以稳定 event_id 在 replay/runtime 双端幂等落盘，完整写后失败、半写坏尾行和跨实例旧游标恢复均通过故障注入",
+        "已有 Windows 1920×1080 主页、局内出生、赛后和仓库真实截图产物；受保护路线采集会为每一步保存 pre/post 帧与实际输入事件，摘要、最终输入释放或截图源关闭失败只生成 partial-run。真实移动路线数据及其确定性回放尚未生成"
       ]
     },
     {
@@ -93,7 +94,8 @@
       "description": "实现 dry-run 与 Windows 标准 SendInput actuator，包含前台窗口守卫、最大按键时长、200ms 急停和人工接管",
       "passes": false,
       "evidence": [
-        "已实现 dry-run 与 user32 SendInput scan-code/相对鼠标 adapter，检查插入数、标题+HWND、F12、独立 daemon watchdog、释放失败后台重试、generation 隔离和异常释放",
+        "已实现 dry-run 与 user32 SendInput scan-code/相对鼠标 adapter，检查插入数、标题+HWND、F12、独立 daemon watchdog、释放失败后台重试、generation 隔离和异常释放；路线采集强制 F12=123，并把脉冲和独立 watchdog 上限固定为 150ms",
+        "路线采集按 10–50ms 复核安全门；阻塞输入事件持久化期间的独立 watchdog 释放、多键部分释放事件持久化、最终释放失败无完整 marker 均通过故障注入",
         "schema v2 armed_ready 默认关闭；fake user32 与独立 10-Gate 安全验收通过；Windows 真实 SendInput、前台切换与 200ms 急停尚未执行"
       ]
     },
@@ -103,9 +105,9 @@
       "description": "Windows 一键入口完成依赖、配置、采集和安全自检，重复执行不启动重复 Worker，失败信息可定位",
       "passes": false,
       "evidence": [
-        "vision.ps1、start-game-route.cmd、start-warehouse-cleanup.cmd 与 start-windows-preflight.cmd 已实现固定依赖、配置只读校验、受控 SendInput E2E、5 秒人工切回、60 秒前台截图基准、局内 DryRun/Armed、LoopDryRun/LoopArmed、WarehouseDryRun/WarehouseArmed 和机器可判定汇总报告；完整外循环严格串行执行 entry、match、被动 return 和 cleanup",
+        "vision.ps1、start-game-route.cmd、start-route-calibration.cmd、start-warehouse-cleanup.cmd 与 start-windows-preflight.cmd 已实现固定依赖、配置只读校验、受控 SendInput E2E、5 秒人工切回、60 秒前台截图基准、局内 DryRun/Armed、LoopDryRun/LoopArmed、WarehouseDryRun/WarehouseArmed、RouteCaptureValidate/DryRun/Armed 和机器可判定汇总报告；完整外循环严格串行执行 entry、match、被动 return 和 cleanup",
         "所有运行模式共用 Local\\DeltaVisionWorker mutex；生产 external_session 同时要求路线与仓库独立 armed_ready、PowerShell ConfirmArmed 和 Python confirm-armed，并从同一配置派生标题、backend、F12 和最大按键时长；DryRun 的被动回厅只使用无输入方法的 Win32WindowProbe；Windows PowerShell 5.1 parser、CMD 分支和 0/1/2 退出码传播尚未实跑",
-        "菜单 Profile 打包器会校验并复制完整引用依赖，使用原子 no-replace 目录/ZIP 发布并在失败时事务回滚；真实 2560×1440 菜单包含 6 个来源 run 与 11 个模板资产，ZIP 完整性和解压重载已验证，但局内路线 Profile 尚缺"
+        "菜单 Profile 打包器会校验并复制完整引用依赖，使用原子 no-replace 目录/ZIP 发布并在失败时事务回滚；当前 Windows 交付包包含真实 1920×1080 菜单与空保险箱仓库 Profile，ZIP 完整性、解压重载和 RouteCaptureValidate 已验证，但局内路线 Profile 尚缺"
       ]
     },
     {
@@ -124,7 +126,8 @@
       "description": "在用户授权的受控游戏场景中，以外部截图和标准输入完成至少一条固定路线并保存完整运行证据",
       "passes": false,
       "evidence": [
-        "2026-07-16 已由用户授权实机走通大厅→战略板→零号大坝常规→跳过配装→零成本进图，并保存检查点；该次入场约 17 秒后被击倒，未开始固定路线，不能计为路线 E2E 或成功率"
+        "2026-07-16 已由用户授权实机走通大厅→战略板→零号大坝常规→跳过配装→零成本进图，并保存检查点；该次入场约 17 秒后被击倒，未开始固定路线，不能计为路线 E2E 或成功率",
+        "2026-07-19 在 1920×1080 窗口基线下再次完成受保护主页出发、进入零号大坝、赛后返回主页并保存真实帧；该轮没有局内移动，路线采集 Armed 与完整外循环仍未执行"
       ]
     },
     {

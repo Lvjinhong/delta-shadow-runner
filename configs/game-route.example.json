@@ -28,6 +28,22 @@
     "loop_interval_ms": 20,
     "max_duration_seconds": 30
   },
+  "route_capture": {
+    "armed_ready": false,
+    "dataset_split": "calibration",
+    "guard_interval_ms": 20,
+    "max_duration_seconds": 30,
+    "steps": [
+      {
+        "step_id": "spawn-forward-01",
+        "keys": ["w"],
+        "pulse_ms": 80,
+        "mouse_dx": 0,
+        "mouse_dy": 0,
+        "settle_ms": 300
+      }
+    ]
+  },
   "perception": {
     "mode": "template",
     "template_profile": "../profiles/route-01/templates.json"

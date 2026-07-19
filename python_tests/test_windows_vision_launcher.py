@@ -15,6 +15,7 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
             '[ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", '
             '"SessionSample", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", '
             '"LoopDryRun", "LoopArmed", "WarehouseDryRun", "WarehouseArmed", '
+            '"RouteCaptureValidate", "RouteCaptureDryRun", "RouteCaptureArmed", '
             '"ControlledE2E", "Preflight")]'
         ),
         "winget.exe install --id astral-sh.uv -e",
@@ -31,6 +32,7 @@ def test_vision_powershell_bootstrap_has_safe_reproducible_contract() -> None:
         "delta_vision.external_session",
         "delta_vision.sample_frames",
         "delta_vision.session_sample",
+        "delta_vision.route_capture",
         "delta_vision.calibrate_templates",
         '[ValidateSet("ncc", "orb", "sift")]',
         "--feature-backend $FeatureBackend",
@@ -206,12 +208,61 @@ def test_route_calibration_cmd_enters_match_then_samples_without_route_profile()
         encoding="utf-8"
     )
 
-    assert "profiles\\menu-zero-cost\\menu.json" in script
+    assert "configs\\game-route.json" in script
+    assert "choice /C DAMQ" in script
     assert "choice /C YN" in script
+    assert "-Mode RouteCaptureDryRun" in script
+    assert "-Mode RouteCaptureArmed" in script
     assert "-Mode SessionSample" in script
     assert "-ConfirmArmed" in script
     assert "-Split calibration" in script
     assert "F12" in script
+    assert "exit /b %EXIT_CODE%" in script
+    choice_index = script.index("choice /C DAMQ")
+    first_config_gate = script.index("call :require_game_config")
+    manual_start = script.index(":manual")
+    finish_start = script.index(":finish")
+    assert choice_index < first_config_gate
+    assert "call :require_game_config" not in script[manual_start:finish_start]
+
+
+def test_vision_route_capture_modes_hold_mutex_and_preserve_exit_code() -> None:
+    script = (PROJECT_ROOT / "vision.ps1").read_text(encoding="utf-8-sig")
+    precreate_index = script.index(
+        "New-Item -ItemType Directory -Path $Artifacts -Force"
+    )
+
+    validate_start = script.index('if ($Mode -eq "RouteCaptureValidate")')
+    dry_start = script.index('if ($Mode -eq "RouteCaptureDryRun")')
+    armed_start = script.index('if ($Mode -eq "RouteCaptureArmed")')
+    session_start = script.index('if ($Mode -eq "SessionArmed")')
+    assert validate_start < dry_start < armed_start < session_start < precreate_index
+
+    validate_block = script[validate_start:dry_start]
+    assert "delta_vision.route_capture" in validate_block
+    assert '"--validate-only"' in validate_block
+    assert "Enter-WorkerLock" not in validate_block
+    assert "--artifacts" not in validate_block
+
+    dry_block = script[dry_start:armed_start]
+    assert "Enter-WorkerLock" in dry_block
+    assert "delta_vision.route_capture" in dry_block
+    assert "--config $configPath" in dry_block
+    assert "--artifacts $Artifacts" in dry_block
+    assert "--run-id $effectiveRunId" in dry_block
+    assert '"--armed"' not in dry_block
+    assert "ReleaseMutex" in dry_block
+    assert "$workerExitCode = $LASTEXITCODE" in dry_block
+    assert "exit $workerExitCode" in dry_block
+
+    armed_block = script[armed_start:session_start]
+    assert "Assert-ArmedConfirmation" in armed_block
+    assert "Enter-WorkerLock" in armed_block
+    assert "delta_vision.route_capture" in armed_block
+    assert '"--armed" "--confirm-armed"' in armed_block
+    assert "ReleaseMutex" in armed_block
+    assert "$workerExitCode = $LASTEXITCODE" in armed_block
+    assert "exit $workerExitCode" in armed_block
 
 
 def test_windows_preflight_cmd_requires_game_config_and_explicit_confirmation() -> None:
@@ -259,6 +310,22 @@ def test_game_route_example_is_safe_template_profile_config() -> None:
         "armed_ready": False,
         "loop_interval_ms": 20,
         "max_duration_seconds": 30,
+    }
+    assert config["route_capture"] == {
+        "armed_ready": False,
+        "dataset_split": "calibration",
+        "guard_interval_ms": 20,
+        "max_duration_seconds": 30,
+        "steps": [
+            {
+                "step_id": "spawn-forward-01",
+                "keys": ["w"],
+                "pulse_ms": 80,
+                "mouse_dx": 0,
+                "mouse_dy": 0,
+                "settle_ms": 300,
+            }
+        ],
     }
     assert config["goal_node_id"] in config["nodes"]
     assert config["edge_actions"]

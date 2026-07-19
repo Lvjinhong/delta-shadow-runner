@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "SessionSample", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", "LoopDryRun", "LoopArmed", "WarehouseDryRun", "WarehouseArmed", "ControlledE2E", "Preflight")]
+    [ValidateSet("Setup", "Sample", "Calibrate", "Evaluate", "SessionSample", "TestTarget", "Benchmark", "DryRun", "Armed", "SessionArmed", "LoopDryRun", "LoopArmed", "WarehouseDryRun", "WarehouseArmed", "RouteCaptureValidate", "RouteCaptureDryRun", "RouteCaptureArmed", "ControlledE2E", "Preflight")]
     [string]$Mode = "DryRun",
 
     [string]$Config = "configs/controlled-window.json",
@@ -405,6 +405,46 @@ if ($Mode -eq "WarehouseArmed") {
             --artifacts $Artifacts `
             --run-id $effectiveRunId `
             --cleanup-only "--armed" "--confirm-armed"
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
+}
+
+if ($Mode -eq "RouteCaptureValidate") {
+    & $uv run python -m delta_vision.route_capture `
+        --config $configPath "--validate-only"
+    exit $LASTEXITCODE
+}
+
+if ($Mode -eq "RouteCaptureDryRun") {
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.route_capture `
+            --config $configPath `
+            --artifacts $Artifacts `
+            --run-id $effectiveRunId
+        $workerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $workerMutex.ReleaseMutex()
+        $workerMutex.Dispose()
+    }
+    exit $workerExitCode
+}
+
+if ($Mode -eq "RouteCaptureArmed") {
+    Assert-ArmedConfirmation
+    $workerMutex = Enter-WorkerLock
+    try {
+        & $uv run python -m delta_vision.route_capture `
+            --config $configPath `
+            --artifacts $Artifacts `
+            --run-id $effectiveRunId `
+            "--armed" "--confirm-armed"
         $workerExitCode = $LASTEXITCODE
     }
     finally {

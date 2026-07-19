@@ -169,3 +169,13 @@ GitHub：https://github.com/Lvjinhong/delta-shadow-runner
 - 本机使用真实 1920×1080 仓库 v3 bundle 执行 `external_session --cleanup-only --validate-only` 通过，输出精确标题、Profile ID、1920×1080 和 `armed_ready=false`，未创建运行 artifact 或输入对象。
 - 本机 Python 3.12.12 全量验证：816 项测试通过，总覆盖率 85.07%；Ruff、sdist/wheel build、CLI help 与 `git diff --check` 通过。独立 code-reviewer 重放两项 HIGH 后最终无代码 finding，结论 APPROVE。
 - Windows `192.168.3.7` publickey-only SSH 仍在 5 秒连接阶段超时；PowerShell parser、CMD 分支、0/1/2 退出码、仓库 live DryRun/Armed 和完整游戏 E2E 仍是交付门禁，本阶段没有发送任何真实游戏输入，也没有翻转 feature pass。
+
+[2026-07-19 1920×1080 受保护路线采集]
+- 新增 `route_capture_config.py`、`route_capture.py` 和 `route_capture_windows.py`：从 schema v2 配置加载确定性短脉冲计划，绑定一次精确 HWND、完整标题和初始 1920×1080 客户区；三帧确认 `IN_MATCH` 后才允许每步执行 pre-frame → 输入 → post-frame 事务。
+- `start-route-calibration.cmd` 现提供 D/A/M/Q：D 只读确认 HUD，A 经 `.cmd`、PowerShell、Python 和 `route_capture.armed_ready` 四层授权执行短脉冲，M 保留菜单自动进图后的 120 秒人工只读采样。旧 M 分支不再被无关的 `game-route.json` 门禁阻断。
+- 路线采集强制 F12=123，单脉冲与独立 Win32 watchdog 上限固定为 150ms，并在按键持有和 settle 期间每 10–50ms 复核 F12、前台 HWND/标题、客户区位置和尺寸。阻塞输入事件持久化时，独立 watchdog 仍可释放按键。
+- 每一步必须先把 pre-frame 写盘；鼠标、key-down、部分或完整 key-up 都即时写入独立输入事件流；post-frame 必须晚于最后实际输入。输入发出后的步骤不重试。
+- `run.json` 改为最终输入清理、截图源关闭和完成摘要全部成功后的最后提交。completed summary、最终输入释放或 source.close 任一故障时均撤销完整 marker，只生成 `partial-run.json` 和 failed summary。
+- 本机真实 1080p 菜单 Profile 执行 `route_capture --validate-only` 通过：Profile `menu-zero-cost-1080p-v1`，客户区 1920×1080，实际 watchdog 150ms，计划 SHA-256 `94026f1bc406eea8ef1a67241661d2fdcfd608f91bf7ef7e6174762eaca37271`；校验没有创建运行 artifact 或输入 gateway。
+- 本机 Python 3.12.12 全量验证：853 项测试通过，总覆盖率 84.77%；Ruff、`uv lock --check`、sdist/wheel build、`pip-audit` 与 `git diff --check` 通过。独立 code-reviewer 重放 F12、部分释放和完整 marker 三类 HIGH，修复后再复核 D/A/M 控制流与 README，最终无 CRITICAL/HIGH/MEDIUM/LOW finding，结论 APPROVE。
+- 当前仍未在 Windows 执行 RouteCaptureDryRun/Armed；零号大坝真实移动路线 Profile、60 秒采集门槛、受控窗口 20/20、F12 实机 <=200ms、仓库真实点击和完整外循环 E2E 继续未完成，相关 feature passes 保持 false。
